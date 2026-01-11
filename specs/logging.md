@@ -9,7 +9,7 @@ Each log entry is a JSON object with the following fields:
 - `ts`: An ISO 8601 timestamp of when the operation occurred.
 - `op`: The type of operation. Can be one of "insert", "update", or "delete".
 - `doc`: The document for "insert" and "update" operations.
-- `id`: The document ID for "update" and "delete" operations.
+- `id`: The document ID for all operations.
 
 ### Insert operation
 
@@ -17,6 +17,7 @@ Each log entry is a JSON object with the following fields:
 {
   "ts": "2026-01-10T12:00:00.000Z",
   "op": "insert",
+  "id": "01H4J3J4J3J4J3J4J3J4J3J4J3",
   "doc": { "a": 1 }
 }
 ```

@@ -13,7 +13,7 @@ pub struct MemTable {
 impl MemTable {
     pub fn new(log_path: &str) -> Self {
         let logger = Logger::new(log_path).unwrap();
-        MemTable {
+        let mut memtable = MemTable {
             documents: BTreeMap::new(),
             schema: Schema {
                 types: vec![],
@@ -21,39 +21,146 @@ impl MemTable {
                 items: None,
             },
             logger,
+        };
+        memtable.recover(log_path);
+        memtable
+    }
+
+        fn recover(&mut self, log_path: &str) {
+
+            let log_content = std::fs::read_to_string(log_path).unwrap_or_default();
+
+            for line in log_content.lines() {
+
+                if line.is_empty() {
+
+                    continue;
+
+                }
+
+                let entry: crate::log::LogEntry = serde_json::from_str(line).unwrap();
+
+                match entry.op {
+
+                    Operation::Insert { id, doc } => {
+
+                        self.insert_with_id(&id, doc);
+
+                    }
+
+                    Operation::Update { id, doc } => {
+
+                        self._update(&id, doc);
+
+                    }
+
+                    Operation::Delete { id } => {
+
+                        self._delete(&id);
+
+                    }
+
+                }
+
+            }
+
         }
-    }
 
-    pub fn insert(&mut self, doc: Value) -> String {
-        let doc_schema = infer_schema(&doc);
-        self.schema.merge(doc_schema.clone());
-        let id = Uuid::now_v7().to_string();
-        self.documents.insert(id.clone(), doc.clone());
-        self.logger
-            .log(Operation::Insert { doc })
-            .expect("Failed to log insert");
-        id
-    }
+    
 
-    pub fn delete(&mut self, id: &str) {
-        self.documents.remove(id);
-        self.logger
-            .log(Operation::Delete { id: id.to_string() })
-            .expect("Failed to log delete");
-    }
+        fn insert_with_id(&mut self, id: &str, doc: Value) {
 
-    pub fn update(&mut self, id: &str, doc: Value) {
-        let doc_schema = infer_schema(&doc);
-        self.schema.merge(doc_schema);
-        self.documents.insert(id.to_string(), doc.clone());
-        self.logger
-            .log(Operation::Update {
-                id: id.to_string(),
-                doc,
-            })
-            .expect("Failed to log update");
+            let doc_schema = infer_schema(&doc);
+
+            self.schema.merge(doc_schema);
+
+            self.documents.insert(id.to_string(), doc);
+
+        }
+
+    
+
+        pub fn insert(&mut self, doc: Value) -> String {
+
+            let doc_schema = infer_schema(&doc);
+
+            self.schema.merge(doc_schema.clone());
+
+            let id = Uuid::now_v7().to_string();
+
+            self.documents.insert(id.clone(), doc.clone());
+
+            self.logger
+
+                .log(Operation::Insert {
+
+                    id: id.clone(),
+
+                    doc,
+
+                })
+
+                .expect("Failed to log insert");
+
+            id
+
+        }
+
+    
+
+        fn _delete(&mut self, id: &str) {
+
+            self.documents.remove(id);
+
+        }
+
+    
+
+        pub fn delete(&mut self, id: &str) {
+
+            self._delete(id);
+
+            self.logger
+
+                .log(Operation::Delete { id: id.to_string() })
+
+                .expect("Failed to log delete");
+
+        }
+
+    
+
+        fn _update(&mut self, id: &str, doc: Value) {
+
+            let doc_schema = infer_schema(&doc);
+
+            self.schema.merge(doc_schema);
+
+            self.documents.insert(id.to_string(), doc);
+
+        }
+
+    
+
+        pub fn update(&mut self, id: &str, doc: Value) {
+
+            self._update(id, doc.clone());
+
+            self.logger
+
+                .log(Operation::Update {
+
+                    id: id.to_string(),
+
+                    doc,
+
+                })
+
+                .expect("Failed to log update");
+
+        }
+
     }
-}
 
 #[cfg(test)]
 mod tests {
@@ -125,7 +232,10 @@ mod tests {
 
         let entry1: crate::log::LogEntry = serde_json::from_str(lines.next().unwrap()).unwrap();
         match entry1.op {
-            Operation::Insert { doc } => assert_eq!(doc, doc1),
+            Operation::Insert { id, doc } => {
+                assert_eq!(id, id1);
+                assert_eq!(doc, doc1);
+            }
             _ => panic!("Expected insert operation"),
         }
 
@@ -143,5 +253,21 @@ mod tests {
             Operation::Delete { id } => assert_eq!(id, id1),
             _ => panic!("Expected delete operation"),
         }
+    }
+
+    #[test]
+    fn test_memtable_recover() {
+        let (log_file, mut memtable) = create_test_memtable();
+        let doc1 = json!({"a": 1});
+        let id1 = memtable.insert(doc1.clone());
+
+        let doc2 = json!({"b": "hello"});
+        let id2 = memtable.insert(doc2.clone());
+
+        memtable.delete(&id1);
+
+        let memtable2 = MemTable::new(log_file.path().to_str().unwrap());
+        assert_eq!(memtable2.documents.len(), 1);
+        assert_eq!(*memtable2.documents.get(&id2).unwrap(), doc2);
     }
 }

@@ -8,6 +8,7 @@ use std::path::Path;
 #[derive(Serialize, Deserialize, Debug)]
 pub enum Operation {
     Insert {
+        id: String,
         doc: Value,
     },
     Update {

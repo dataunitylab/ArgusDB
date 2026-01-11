@@ -20,7 +20,7 @@ This stage will implement logging of all operations in ArgusDB to allow for faul
 
 - [x] Define a log file format in specs/logging.md
 - [x] Add log entries whenever new documents are inserted
-- [] Implement log recovery to read the log on restart and recover from a crash
+- [x] Implement log recovery to read the log on restart and recover from a crash
 - [] Implement log rotation and deletion of old log files
 
 # Stage 4 - Disk storage
