@@ -18,8 +18,8 @@ This stage will implement a simple in-memory version of ArgusDB that will serve 
 
 This stage will implement logging of all operations in ArgusDB to allow for fault tolerance.
 
-- [] Define a log file format in specs/logging.md
-- [] Add log entries whenever new documents are inserted
+- [x] Define a log file format in specs/logging.md
+- [x] Add log entries whenever new documents are inserted
 - [] Implement log recovery to read the log on restart and recover from a crash
 - [] Implement log rotation and deletion of old log files
 

@@ -9,3 +9,7 @@ sqlparser = "0.60.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 uuid = { version = "1.8.0", features = ["v7", "serde"] }
+chrono = { version = "0.4.38", features = ["serde"] }
+
+[dev-dependencies]
+tempfile = "3.10.1"
