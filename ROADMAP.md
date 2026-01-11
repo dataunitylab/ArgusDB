@@ -9,10 +9,10 @@ This stage will implement a basic version of JSON Schema discovery to be used in
 
 This stage will implement a simple in-memory version of ArgusDB that will serve as the first layer of the LSM tree.
 
-- [] Accept documents for insertion into an in-memory data structure and infer a schema
-- [] Add documents to an in-memory data structure and update the inferred schema
-- [] Allow deletion of documents by ID
-- [] Allow updating of documents by ID
+- [x] Accept documents for insertion into an in-memory data structure and infer a schema
+- [x] Add documents to an in-memory data structure and update the inferred schema
+- [x] Allow deletion of documents by ID
+- [x] Allow updating of documents by ID
 
 # Stage 3 - Logging
 
