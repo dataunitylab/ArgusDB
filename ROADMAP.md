@@ -2,8 +2,8 @@
 
 This stage will implement a basic version of JSON Schema discovery to be used in ArgusDB.
 
-- [] Infer a schema for an individual document
-- [] Merge schemas to allow inference of schemas for multiple documents
+- [x] Infer a schema for an individual document
+- [x] Merge schemas to allow inference of schemas for multiple documents
 
 # Stage 2 - In-memory storage
 
