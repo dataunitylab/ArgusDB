@@ -27,7 +27,7 @@ This stage will implement logging of all operations in ArgusDB to allow for faul
 
 This stage will allow the data stored in memory to be dumped to disk to allow storage of large data sets, resulting in a two-level LSM tree.
 
-- [] Define an on-disk format for JSTables in specs/storage.md including both the schema and the data
+- [x] Define an on-disk format for JSTables in specs/storage.md including both the schema and the data
 - [] When documents are inserted past the in-memory threshold, write a new JSTable to disk and start a new in-memory structure
 
 # Stage 5 - LSM compaction
