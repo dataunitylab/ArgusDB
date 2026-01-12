@@ -1,1 +1,7 @@
 target/
+
+# ArgusDB generated files
+argus.log
+argus.log.*
+jstable-*
+
