@@ -11,8 +11,8 @@ pub struct MemTable {
 }
 
 impl MemTable {
-    pub fn new(log_path: &str) -> Self {
-        let logger = Logger::new(log_path).unwrap();
+    pub fn new(log_path: &str, rotation_threshold: u64) -> Self {
+        let logger = Logger::new(log_path, rotation_threshold).unwrap();
         let mut memtable = MemTable {
             documents: BTreeMap::new(),
             schema: Schema {
@@ -171,7 +171,7 @@ mod tests {
 
     fn create_test_memtable() -> (NamedTempFile, MemTable) {
         let log_file = NamedTempFile::new().unwrap();
-        let memtable = MemTable::new(log_file.path().to_str().unwrap());
+        let memtable = MemTable::new(log_file.path().to_str().unwrap(), 1024 * 1024);
         (log_file, memtable)
     }
 
@@ -266,8 +266,31 @@ mod tests {
 
         memtable.delete(&id1);
 
-        let memtable2 = MemTable::new(log_file.path().to_str().unwrap());
+        let memtable2 = MemTable::new(log_file.path().to_str().unwrap(), 1024 * 1024);
         assert_eq!(memtable2.documents.len(), 1);
         assert_eq!(*memtable2.documents.get(&id2).unwrap(), doc2);
+    }
+
+    #[test]
+    fn test_automatic_log_rotation() {
+        let log_file = NamedTempFile::new().unwrap();
+        let mut memtable = MemTable::new(log_file.path().to_str().unwrap(), 100);
+        let doc1 = json!({"a": 1});
+        memtable.insert(doc1);
+
+        let log_content = std::fs::read_to_string(log_file.path()).unwrap();
+        assert!(!log_content.is_empty());
+
+        let doc2 = json!({"b": "a long string to make the log entry bigger than the threshold"});
+        memtable.insert(doc2);
+
+        let log_content_after_rotation = std::fs::read_to_string(log_file.path()).unwrap();
+        let rotated_log_path = log_file.path().with_extension("log.1");
+        let rotated_log_content = std::fs::read_to_string(rotated_log_path).unwrap();
+
+        assert!(!rotated_log_content.is_empty());
+        assert!(rotated_log_content.contains("{\"a\":1}"));
+        assert!(!log_content_after_rotation.contains("{\"a\":1}"));
+        assert!(log_content_after_rotation.contains("a long string"));
     }
 }
