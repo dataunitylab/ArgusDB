@@ -25,7 +25,7 @@ pub struct Schema {
 }
 
 impl Schema {
-    fn new(schema_type: SchemaType) -> Self {
+    pub fn new(schema_type: SchemaType) -> Self {
         Schema {
             types: vec![schema_type],
             properties: None,
