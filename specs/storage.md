@@ -7,12 +7,14 @@ Each JSTable is stored in a single file.
 This file must contain a JSON Schema as well as all the associated documents.
 
 The format is as follows:
-1.  The schema, serialized as JSON, followed by a newline.
+1.  A JSON object containing metadata about the table. It must include:
+    *   `timestamp`: The time the table was created, as a Unix timestamp in milliseconds.
+    *   `schema`: The JSON Schema for the documents in the table.
 2.  A sequence of records, one per line. Each record is a JSON array `[id, document]`.
 
 Example:
 ```
-{"type":"object","properties":{"a":{"type":["integer"]}}}
+{"timestamp": 1686776400000, "schema": {"type":"object","properties":{"a":{"type":["integer"]}}}}
 ["01H4J3J4J3J4J3J4J3J4J3J4J3", {"a": 1}]
 ["01H4J3J4J3J4J3J4J3J4J3J4J4", {"a": 2}]
 ["01H4J3J4J3J4J3J4J3J4J3J4J5", null]

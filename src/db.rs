@@ -194,8 +194,10 @@ mod tests {
         db.delete(&id1);
 
         let db2 = DB::new(dir.path().to_str().unwrap());
-        assert_eq!(db2.memtable.len(), 1);
+        // Memtable should contain 2 entries: id2 (doc) and id1 (null/tombstone)
+        assert_eq!(db2.memtable.len(), 2);
         assert_eq!(*db2.memtable.documents.get(&id2).unwrap(), doc2);
+        assert!(db2.memtable.documents.get(&id1).unwrap().is_null());
     }
 
     #[test]

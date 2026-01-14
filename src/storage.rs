@@ -25,7 +25,11 @@ impl MemTable {
     }
 
     pub fn flush(&self, path: &str) -> std::io::Result<()> {
-        let jstable = JSTable::new(self.schema.clone(), self.documents.clone());
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let jstable = JSTable::new(timestamp, self.schema.clone(), self.documents.clone());
         jstable.write(path)
     }
 
