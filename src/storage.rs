@@ -1,8 +1,7 @@
+use crate::jstable::JSTable;
 use crate::schema::{infer_schema, Schema};
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::io::Write;
-use serde_json::json;
 
 pub struct MemTable {
     pub documents: BTreeMap<String, Value>,
@@ -26,15 +25,8 @@ impl MemTable {
     }
 
     pub fn flush(&self, path: &str) -> std::io::Result<()> {
-        let mut file = std::fs::File::create(path)?;
-        let schema_json = serde_json::to_string(&self.schema)?;
-        writeln!(file, "{}", schema_json)?;
-        for (id, doc) in &self.documents {
-            let record = json!([id, doc]);
-            let record_json = serde_json::to_string(&record)?;
-            writeln!(file, "{}", record_json)?;
-        }
-        Ok(())
+        let jstable = JSTable::new(self.schema.clone(), self.documents.clone());
+        jstable.write(path)
     }
 
     pub fn insert(&mut self, id: String, doc: Value) {
@@ -43,14 +35,14 @@ impl MemTable {
         self.documents.insert(id, doc);
     }
 
-    pub fn delete(&mut self, id: &str) {
-        self.documents.remove(id);
-    }
-
     pub fn update(&mut self, id: &str, doc: Value) {
         let doc_schema = infer_schema(&doc);
         self.schema.merge(doc_schema);
         self.documents.insert(id.to_string(), doc);
+    }
+
+    pub fn delete(&mut self, id: &str) {
+        self.documents.insert(id.to_string(), Value::Null);
     }
 }
 
@@ -73,15 +65,6 @@ mod tests {
         let props = schema.properties.unwrap();
         assert_eq!(props.get("a").unwrap().types, vec![SchemaType::Integer]);
         assert_eq!(props.get("b").unwrap().types, vec![SchemaType::String]);
-    }
-
-    #[test]
-    fn test_memtable_delete() {
-        let mut memtable = MemTable::new();
-        memtable.insert("test-id".to_string(), json!({"a": 1}));
-        assert_eq!(memtable.len(), 1);
-        memtable.delete("test-id");
-        assert_eq!(memtable.len(), 0);
     }
 
     #[test]

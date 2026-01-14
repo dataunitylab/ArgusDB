@@ -15,11 +15,13 @@ Example:
 {"type":"object","properties":{"a":{"type":["integer"]}}}
 ["01H4J3J4J3J4J3J4J3J4J3J4J3", {"a": 1}]
 ["01H4J3J4J3J4J3J4J3J4J3J4J4", {"a": 2}]
+["01H4J3J4J3J4J3J4J3J4J3J4J5", null]
 ```
 
 ## Compression
 
 Documents are stored as full JSON objects. This means that no compression is currently applied.
+A document can be `null` to indicate that it has been deleted.
 Future versions of the format might include schema-based compression. For example, if a field must be an integer, the type information need not be stored with each document. If a field can have multiple possible types, then the type information must be stored with each document.
 
 

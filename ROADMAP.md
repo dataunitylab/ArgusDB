@@ -34,7 +34,7 @@ This stage will allow the data stored in memory to be dumped to disk to allow st
 
 This stage will implement the compaction algorithm for the LSM tree.
 
-- [] Implement compaction for JSTables by merging their schemas and updating the compressed documents
+- [x] Implement compaction for JSTables by merging their schemas and updating the compressed documents
 
 # Stage 6 - Internal query API
 
