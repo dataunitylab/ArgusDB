@@ -46,7 +46,7 @@ This stage will implement the compaction algorithm for the LSM tree.
 
 This stage will implement the query language of ArgusDB.
 
-- [] Refine the specification of the query language in specs/query-language.md
+- [x] Refine the specification of the query language in specs/query-language.md
 - [] Implement a grammar for parsing the query language
 - [] Create query plans with the internal API from the parsed SQL
 

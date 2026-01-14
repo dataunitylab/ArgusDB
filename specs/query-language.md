@@ -1,23 +1,90 @@
-The syntax used by ArgusDB is an extension of SQL and inspired by [XTDB](https://xtdb.com/).
-Examples of syntax for different use cases are given below.
+# Query Language Specification
 
-## Insertion
+ArgusDB supports a SQL-like query language optimized for manipulating and retrieving JSON documents.
+
+## Data Model
+
+The database consists of collections of JSON documents. Each document is a semi-structured object with nested fields, arrays, and values.
+
+## Statements
+
+### INSERT
+
+The `INSERT` statement is used to add new documents to a collection.
+
+**Syntax:**
+
+```sql
+INSERT INTO <collection_name>
+RECORDS <json_object> [, <json_object> ...]
+```
+
+**Parameters:**
+
+*   `collection_name`: The name of the collection to insert into.
+*   `json_object`: A standard JSON object literal representing the document. Keys in the JSON object usually do not require quotes if they are simple identifiers, but standard JSON requires quotes. The parser should support standard JSON syntax.
+
+**Example:**
 
 ```sql
 INSERT INTO people
-RECORDS {_id: 6,
-         name: 'fred',
-         info: {contact: [{loc: 'home',
-                           tel: '123'},
-                          {loc: 'work',
-                           tel: '456',
-                           registered: DATE '2024-01-01'}]}}
+RECORDS {
+    "name": "Alice",
+    "age": 30,
+    "address": {"city": "Paris", "zip": "75001"}
+}
 ```
 
-## Querying
+### SELECT
+
+The `SELECT` statement retrieves data from a collection, allowing for filtering, projection, and pagination.
+
+**Syntax:**
 
 ```sql
-SELECT (people.info).contact[2].tel
+SELECT <expression_list>
+FROM <collection_name>
+[WHERE <predicate>]
+[LIMIT <integer>]
+[OFFSET <integer>]
+```
+
+#### Clauses
+
+*   **SELECT**: Specifies the fields or expressions to return in the result set.
+*   **FROM**: Specifies the source collection to query.
+*   **WHERE**: Filters documents based on a boolean predicate. Only documents for which the predicate evaluates to `TRUE` are included in the result.
+*   **LIMIT**: Restricts the maximum number of documents returned.
+*   **OFFSET**: Skips a specified number of documents before returning results.
+
+#### Expressions and Operators
+
+The language supports various expressions to interact with JSON data:
+
+*   **Field Access**:
+    *   Dot notation: `info.contact` accesses the `contact` field within the `info` object.
+    *   Array Indexing: `contact[0]` accesses the first element of the `contact` array.
+*   **Literals**:
+    *   Strings: `'value'` (single quotes) or `"value"` (double quotes)
+    *   Numbers: `123`, `45.67`
+    *   Booleans: `TRUE`, `FALSE`
+    *   Null: `NULL`
+*   **Comparison Operators**:
+    *   `=`: Equality
+    *   `!=` or `<>`: Inequality
+    *   `<`, `<=`: Less than, Less than or equal
+    *   `>`, `>=`: Greater than, Greater than or equal
+*   **Logical Operators**:
+    *   `AND`: Logical conjunction
+    *   `OR`: Logical disjunction
+    *   `NOT`: Logical negation
+
+**Example:**
+
+```sql
+SELECT name, info.contact[0].tel
 FROM people
-WHERE people.name = 'fred'
+WHERE age >= 21 AND active = TRUE
+LIMIT 10
+OFFSET 5
 ```
