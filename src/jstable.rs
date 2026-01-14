@@ -50,51 +50,85 @@ impl JSTable {
     }
 }
 
-pub fn read_jstable(path: &str) -> io::Result<JSTable> {
-    let file = File::open(path)?;
-    let mut reader = BufReader::new(file);
+pub struct JSTableIterator {
+    reader: BufReader<File>,
+    pub timestamp: u64,
+    pub schema: Schema,
+}
 
-    // Read Header Length
-    let mut len_buf = [0u8; 4];
-    reader.read_exact(&mut len_buf)?;
-    let header_len = u32::from_le_bytes(len_buf) as usize;
+impl JSTableIterator {
+    pub fn new(path: &str) -> io::Result<Self> {
+        let file = File::open(path)?;
+        let mut reader = BufReader::new(file);
 
-    // Read Header Blob
-    let mut header_blob = vec![0u8; header_len];
-    reader.read_exact(&mut header_blob)?;
-    
-    let header_val = jsonb::from_slice(&header_blob).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    // Convert jsonb::Value -> String -> T
-    let header_str = header_val.to_string();
-    let header: JSTableHeader = serde_json::from_str(&header_str).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        // Read Header Length
+        let mut len_buf = [0u8; 4];
+        reader.read_exact(&mut len_buf)?;
+        let header_len = u32::from_le_bytes(len_buf) as usize;
 
-    let mut documents = BTreeMap::new();
-    
-    // Read Records
-    loop {
-        match reader.read_exact(&mut len_buf) {
+        // Read Header Blob
+        let mut header_blob = vec![0u8; header_len];
+        reader.read_exact(&mut header_blob)?;
+        
+        let header_val = jsonb::from_slice(&header_blob).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        // Convert jsonb::Value -> String -> T
+        let header_str = header_val.to_string();
+        let header: JSTableHeader = serde_json::from_str(&header_str).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+        Ok(Self {
+            reader,
+            timestamp: header.timestamp,
+            schema: header.schema,
+        })
+    }
+}
+
+impl Iterator for JSTableIterator {
+    type Item = io::Result<(String, Value)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let mut len_buf = [0u8; 4];
+        match self.reader.read_exact(&mut len_buf) {
             Ok(_) => {
                 let record_len = u32::from_le_bytes(len_buf) as usize;
                 let mut record_blob = vec![0u8; record_len];
-                reader.read_exact(&mut record_blob)?;
+                if let Err(e) = self.reader.read_exact(&mut record_blob) {
+                    return Some(Err(e));
+                }
                 
-                let record_val = jsonb::from_slice(&record_blob).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                let record_val = match jsonb::from_slice(&record_blob).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e)) {
+                    Ok(v) => v,
+                    Err(e) => return Some(Err(e)),
+                };
                 let record_str = record_val.to_string();
-                let record: (String, Value) = serde_json::from_str(&record_str).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                let record: (String, Value) = match serde_json::from_str(&record_str).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e)) {
+                    Ok(v) => v,
+                    Err(e) => return Some(Err(e)),
+                };
                 
-                documents.insert(record.0, record.1);
+                Some(Ok(record))
             }
-            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
-                break;
-            }
-            Err(e) => return Err(e),
+            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => None,
+            Err(e) => Some(Err(e)),
         }
     }
+}
 
-    Ok(JSTable { 
-        timestamp: header.timestamp,
-        schema: header.schema, 
-        documents 
+pub fn read_jstable(path: &str) -> io::Result<JSTable> {
+    let mut iterator = JSTableIterator::new(path)?;
+    let timestamp = iterator.timestamp;
+    let schema = iterator.schema.clone();
+    
+    let mut documents = BTreeMap::new();
+    for result in iterator {
+        let (id, doc) = result?;
+        documents.insert(id, doc);
+    }
+    
+    Ok(JSTable {
+        timestamp,
+        schema,
+        documents,
     })
 }
 
@@ -152,6 +186,41 @@ mod tests {
         assert_eq!(read_table.documents.len(), 2);
         assert_eq!(*read_table.documents.get("id1").unwrap(), json!({"a": 1}));
         assert_eq!(*read_table.documents.get("id2").unwrap(), json!({"a": 2}));
+        Ok(())
+    }
+
+    #[test]
+    fn test_jstable_iterator() -> Result<(), Box<dyn std::error::Error>> {
+        let schema = Schema {
+            types: vec![SchemaType::Object],
+            properties: Some(BTreeMap::from([
+                ("a".to_string(), Schema::new(SchemaType::Integer)),
+            ])),
+            items: None,
+        };
+        let mut documents = BTreeMap::new();
+        documents.insert("id1".to_string(), json!({"a": 1}));
+        documents.insert("id2".to_string(), json!({"a": 2}));
+        let jstable = JSTable::new(12345, schema.clone(), documents.clone());
+
+        let file = NamedTempFile::new().unwrap();
+        jstable.write(file.path().to_str().unwrap()).unwrap();
+
+        let mut iterator = JSTableIterator::new(file.path().to_str().unwrap())?;
+        assert_eq!(iterator.timestamp, 12345);
+        
+        let mut count = 0;
+        let mut ids = Vec::new();
+        for result in iterator {
+            let (id, doc) = result?;
+            count += 1;
+            ids.push(id);
+            assert!(doc == json!({"a": 1}) || doc == json!({"a": 2}));
+        }
+        assert_eq!(count, 2);
+        assert!(ids.contains(&"id1".to_string()));
+        assert!(ids.contains(&"id2".to_string()));
+        
         Ok(())
     }
 
