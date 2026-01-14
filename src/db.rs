@@ -4,6 +4,7 @@ use crate::storage::MemTable;
 use serde_json::Value;
 use std::fs;
 use uuid::Uuid;
+use std::iter::Peekable;
 
 const MEMTABLE_THRESHOLD: usize = 10;
 const JSTABLE_THRESHOLD: u64 = 5;
@@ -13,6 +14,63 @@ pub struct DB {
     jstable_dir: String,
     jstable_count: u64,
     logger: Logger,
+}
+
+struct MergedIterator<'a> {
+    sources: Vec<Peekable<Box<dyn Iterator<Item = (String, Value)> + 'a>>>,
+}
+
+impl<'a> Iterator for MergedIterator<'a> {
+    type Item = (String, Value);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            // Find min_id
+            let mut min_id: Option<String> = None;
+
+            for source in &mut self.sources {
+                if let Some((id, _)) = source.peek() {
+                    match &min_id {
+                        None => min_id = Some(id.clone()),
+                        Some(current_min) => {
+                            if id < current_min {
+                                min_id = Some(id.clone());
+                            }
+                        }
+                    }
+                }
+            }
+
+            let min_id = min_id?; // If None, all exhausted
+
+            // Consume from sources
+            let mut result: Option<Value> = None;
+
+            for source in &mut self.sources {
+                let is_match = if let Some((id, _)) = source.peek() {
+                    id == &min_id
+                } else {
+                    false
+                };
+
+                if is_match {
+                    let (_, doc) = source.next().unwrap();
+                    if result.is_none() {
+                        // First match (highest priority)
+                        result = Some(doc);
+                    }
+                    // Else: ignored (shadowed)
+                }
+            }
+
+            if let Some(doc) = result {
+                if !doc.is_null() {
+                    return Some((min_id, doc));
+                }
+                // If null (tombstone), loop again
+            }
+        }
+    }
 }
 
 impl DB {
@@ -47,6 +105,26 @@ impl DB {
             jstable_count: 0,
             logger,
         }
+    }
+
+    pub fn scan(&self) -> impl Iterator<Item = (String, Value)> + '_ {
+        let mut sources: Vec<Peekable<Box<dyn Iterator<Item = (String, Value)>>>> = Vec::new();
+
+        // 1. MemTable Iterator (Priority 0 - Highest)
+        let mem_iter = self.memtable.documents.iter().map(|(k, v)| (k.clone(), v.clone()));
+        sources.push((Box::new(mem_iter) as Box<dyn Iterator<Item = (String, Value)>>).peekable());
+
+        // 2. JSTable Iterators (Newer to Older)
+        for i in (0..self.jstable_count).rev() {
+            let path = format!("{}/jstable-{}", self.jstable_dir, i);
+            if let Ok(iter) = jstable::JSTableIterator::new(&path) {
+                // Map Result to Value, unwrapping errors for now
+                let iter = iter.map(|r| r.unwrap());
+                sources.push((Box::new(iter) as Box<dyn Iterator<Item = (String, Value)>>).peekable());
+            }
+        }
+
+        MergedIterator { sources }
     }
 
     pub fn insert(&mut self, doc: Value) -> String {
@@ -280,5 +358,49 @@ mod tests {
         
         // Verify other documents exist (e.g. from flush 1)
         assert!(table.documents.len() > 40);
+    }
+
+    #[test]
+    fn test_db_scan() {
+        let dir = tempdir().unwrap();
+        let mut db = DB::new(dir.path().to_str().unwrap());
+
+        // 1. Insert into JSTable (flush)
+        // 0..9
+        let mut ids = Vec::new();
+        for i in 0..MEMTABLE_THRESHOLD {
+             ids.push(db.insert(json!({"val": i})));
+        }
+        // This filled memtable (10 items). Next insert triggers flush.
+        
+        // 2. Insert into MemTable (triggers flush of 0..9 to jstable-0)
+        let id_val_10 = db.insert(json!({"val": 10})); 
+        // Memtable has 1 item (val 10). jstable-0 has 10 items.
+
+        // 3. Shadowing: Update an item from jstable-0
+        let id_to_shadow = ids[0].clone(); // val: 0
+        db.update(&id_to_shadow, json!({"val": 999}));
+        // Memtable has: val: 10, val: 999 (id_to_shadow).
+
+        // 4. Deletion: Delete an item from jstable-0
+        let id_to_delete = ids[1].clone(); // val: 1
+        db.delete(&id_to_delete);
+        // Memtable has: val: 10, val: 999, tombstone(id_to_delete).
+
+        // Scan
+        let results: std::collections::HashMap<String, Value> = db.scan().collect();
+
+        // Check shadowing
+        assert_eq!(results.get(&id_to_shadow).unwrap(), &json!({"val": 999}));
+        
+        // Check deletion
+        assert!(!results.contains_key(&id_to_delete));
+        
+        // Check preservation of older jstable item
+        let id_preserved = ids[2].clone(); // val: 2
+        assert_eq!(results.get(&id_preserved).unwrap(), &json!({"val": 2}));
+        
+        // Check memtable item
+        assert_eq!(results.get(&id_val_10).unwrap(), &json!({"val": 10}));
     }
 }
