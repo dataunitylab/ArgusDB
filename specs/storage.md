@@ -3,28 +3,25 @@ A JSTable is like an SSTable, but stores semi-structured JSON data with an assoc
 
 # Disk format
 
-Each JSTable is stored in a single file.
-This file must contain a JSON Schema as well as all the associated documents.
+Each JSTable is stored in a single binary file using the [JSONB](https://github.com/databendlabs/jsonb) format.
+The file consists of a sequence of entries. Each entry is encoded as:
+1.  **Length**: A 4-byte unsigned integer (little-endian) indicating the size of the following JSONB blob.
+2.  **Data**: A binary blob encoded using the JSONB format.
 
-The format is as follows:
-1.  A JSON object containing metadata about the table. It must include:
-    *   `timestamp`: The time the table was created, as a Unix timestamp in milliseconds.
-    *   `schema`: The JSON Schema for the documents in the table.
-2.  A sequence of records, one per line. Each record is a JSON array `[id, document]`.
+## Structure
 
-Example:
-```
-{"timestamp": 1686776400000, "schema": {"type":"object","properties":{"a":{"type":["integer"]}}}}
-["01H4J3J4J3J4J3J4J3J4J3J4J3", {"a": 1}]
-["01H4J3J4J3J4J3J4J3J4J3J4J4", {"a": 2}]
-["01H4J3J4J3J4J3J4J3J4J3J4J5", null]
-```
+1.  **Header Entry**: The first entry in the file. It is a JSONB-encoded object containing:
+    *   `timestamp`: The time the table was created (Unix timestamp in milliseconds).
+    *   `schema`: The JSON Schema for the documents.
+2.  **Record Entries**: All subsequent entries. Each is a JSONB-encoded array `[id, document]`:
+    *   `id`: String.
+    *   `document`: The document object (or `null` for tombstone).
 
 ## Compression
 
-Documents are stored as full JSON objects. This means that no compression is currently applied.
+Documents are stored using the JSONB binary format, which is generally more compact than text JSON.
 A document can be `null` to indicate that it has been deleted.
-Future versions of the format might include schema-based compression. For example, if a field must be an integer, the type information need not be stored with each document. If a field can have multiple possible types, then the type information must be stored with each document.
+Future versions might include schema-based compression.
 
 
 # Compaction

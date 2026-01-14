@@ -136,8 +136,9 @@ mod tests {
         assert_eq!(db.jstable_count, 1);
 
         let jstable_path = format!("{}/jstable-0", dir.path().to_str().unwrap());
-        let content = std::fs::read_to_string(jstable_path).unwrap();
-        assert!(!content.is_empty());
+        // Verify it is a valid JSTable
+        let table = jstable::read_jstable(&jstable_path).unwrap();
+        assert_eq!(table.documents.len(), MEMTABLE_THRESHOLD);
     }
 
     #[test]

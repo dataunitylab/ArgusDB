@@ -2,7 +2,7 @@ use crate::schema::Schema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::io::{self, BufReader, BufRead, Write};
+use std::io::{self, BufReader, Read, Write};
 use std::fs::File;
 
 pub struct JSTable {
@@ -24,16 +24,27 @@ impl JSTable {
 
     pub fn write(&self, path: &str) -> io::Result<()> {
         let mut file = File::create(path)?;
+        
+        // Write Header
         let header = JSTableHeader {
             timestamp: self.timestamp,
             schema: self.schema.clone(),
         };
-        let header_json = serde_json::to_string(&header)?;
-        writeln!(file, "{}", header_json)?;
+        // Serialize header using jsonb
+        let header_blob = jsonb::to_owned_jsonb(&header).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let header_bytes = header_blob.to_vec();
+        let header_len = header_bytes.len() as u32;
+        file.write_all(&header_len.to_le_bytes())?;
+        file.write_all(&header_bytes)?;
+
+        // Write Documents
         for (id, doc) in &self.documents {
             let record: (String, &Value) = (id.clone(), doc);
-            let record_json = serde_json::to_string(&record)?;
-            writeln!(file, "{}", record_json)?;
+            let record_blob = jsonb::to_owned_jsonb(&record).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            let record_bytes = record_blob.to_vec();
+            let record_len = record_bytes.len() as u32;
+            file.write_all(&record_len.to_le_bytes())?;
+            file.write_all(&record_bytes)?;
         }
         Ok(())
     }
@@ -41,20 +52,43 @@ impl JSTable {
 
 pub fn read_jstable(path: &str) -> io::Result<JSTable> {
     let file = File::open(path)?;
-    let reader = BufReader::new(file);
-    let mut lines = reader.lines();
+    let mut reader = BufReader::new(file);
 
-    let header_line = lines.next().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Missing header line"))??;
-    let header: JSTableHeader = serde_json::from_str(&header_line)?;
+    // Read Header Length
+    let mut len_buf = [0u8; 4];
+    reader.read_exact(&mut len_buf)?;
+    let header_len = u32::from_le_bytes(len_buf) as usize;
+
+    // Read Header Blob
+    let mut header_blob = vec![0u8; header_len];
+    reader.read_exact(&mut header_blob)?;
+    
+    let header_val = jsonb::from_slice(&header_blob).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    // Convert jsonb::Value -> String -> T
+    let header_str = header_val.to_string();
+    let header: JSTableHeader = serde_json::from_str(&header_str).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
     let mut documents = BTreeMap::new();
-    for line_result in lines {
-        let line = line_result?;
-        if line.is_empty() {
-            continue;
+    
+    // Read Records
+    loop {
+        match reader.read_exact(&mut len_buf) {
+            Ok(_) => {
+                let record_len = u32::from_le_bytes(len_buf) as usize;
+                let mut record_blob = vec![0u8; record_len];
+                reader.read_exact(&mut record_blob)?;
+                
+                let record_val = jsonb::from_slice(&record_blob).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                let record_str = record_val.to_string();
+                let record: (String, Value) = serde_json::from_str(&record_str).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                
+                documents.insert(record.0, record.1);
+            }
+            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
+                break;
+            }
+            Err(e) => return Err(e),
         }
-        let record: (String, Value) = serde_json::from_str(&line)?;
-        documents.insert(record.0, record.1);
     }
 
     Ok(JSTable { 
@@ -93,39 +127,9 @@ mod tests {
     use crate::schema::SchemaType;
     use serde_json::json;
     use tempfile::NamedTempFile;
-    use std::io::Write;
 
     #[test]
     fn test_read_jstable() -> Result<(), Box<dyn std::error::Error>> {
-        let mut file = NamedTempFile::new().unwrap();
-        let schema = Schema {
-            types: vec![SchemaType::Object],
-            properties: Some(BTreeMap::from([
-                ("a".to_string(), Schema::new(SchemaType::Integer)),
-            ])),
-            items: None,
-        };
-        let header = JSTableHeader {
-            timestamp: 12345,
-            schema: schema,
-        };
-        let header_json = serde_json::to_string(&header).unwrap();
-        writeln!(file, "{}", header_json).unwrap();
-        writeln!(file, "{}", serde_json::to_string(&json!(["id1", {"a": 1}])).unwrap()).unwrap();
-        writeln!(file, "{}", serde_json::to_string(&json!(["id2", {"a": 2}])).unwrap()).unwrap();
-
-        let jstable = read_jstable(file.path().to_str().unwrap()).unwrap();
-
-        assert_eq!(jstable.timestamp, 12345);
-        assert_eq!(jstable.schema.types, vec![SchemaType::Object]);
-        assert_eq!(jstable.documents.len(), 2);
-        assert_eq!(*jstable.documents.get("id1").unwrap(), json!({"a": 1}));
-        assert_eq!(*jstable.documents.get("id2").unwrap(), json!({"a": 2}));
-        Ok(())
-    }
-
-    #[test]
-    fn test_write_jstable() -> Result<(), Box<dyn std::error::Error>> {
         let schema = Schema {
             types: vec![SchemaType::Object],
             properties: Some(BTreeMap::from([
@@ -136,21 +140,18 @@ mod tests {
         let mut documents = BTreeMap::new();
         documents.insert("id1".to_string(), json!({"a": 1}));
         documents.insert("id2".to_string(), json!({"a": 2}));
-        let jstable = JSTable::new(67890, schema, documents);
+        let jstable = JSTable::new(12345, schema.clone(), documents.clone());
 
         let file = NamedTempFile::new().unwrap();
         jstable.write(file.path().to_str().unwrap()).unwrap();
 
-        let content = std::fs::read_to_string(file.path()).unwrap();
-        let lines: Vec<&str> = content.lines().collect();
-        let header: JSTableHeader = serde_json::from_str(lines[0])?;
-        
-        assert_eq!(header.timestamp, 67890);
-        assert_eq!(header.schema.types, vec![SchemaType::Object]);
+        let read_table = read_jstable(file.path().to_str().unwrap()).unwrap();
 
-        assert!(content.contains("[\"id1\",{\"a\":1}]"));
-        assert!(content.contains("[\"id2\",{\"a\":2}]"));
-
+        assert_eq!(read_table.timestamp, 12345);
+        assert_eq!(read_table.schema.types, vec![SchemaType::Object]);
+        assert_eq!(read_table.documents.len(), 2);
+        assert_eq!(*read_table.documents.get("id1").unwrap(), json!({"a": 1}));
+        assert_eq!(*read_table.documents.get("id2").unwrap(), json!({"a": 2}));
         Ok(())
     }
 
@@ -167,7 +168,6 @@ mod tests {
         let t2 = JSTable::new(200, schema.clone(), docs2);
 
         // Case 1: t1 (older) then t2 (newer) in the slice
-        // Note: Creating array [t1, t2] moves them.
         let merged = merge_jstables(&[t1, t2]);
         assert_eq!(*merged.documents.get("id1").unwrap(), json!({"v": 2}));
         assert_eq!(merged.timestamp, 200);
