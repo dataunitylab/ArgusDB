@@ -74,7 +74,7 @@ pub fn infer_schema(doc: &Value) -> Schema {
         }
         Value::String(_) => Schema::new(SchemaType::String),
         Value::Array(arr) => {
-            let mut items_schema = if let Some(first) = arr.get(0) {
+            let mut items_schema = if let Some(first) = arr.first() {
                 infer_schema(first)
             } else {
                 // Empty array, we can't infer the type.

@@ -1,7 +1,7 @@
 use crate::jstable;
 use crate::log::{LogEntry, Logger, Operation};
 use crate::storage::MemTable;
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::fs;
 use uuid::Uuid;
 

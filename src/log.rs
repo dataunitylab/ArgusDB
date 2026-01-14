@@ -37,7 +37,6 @@ impl Logger {
         let path = path.as_ref().to_path_buf();
         let file = OpenOptions::new()
             .create(true)
-            .write(true)
             .append(true)
             .open(&path)?;
         Ok(Logger {
@@ -64,7 +63,6 @@ impl Logger {
         fs::rename(&self.path, new_path)?;
         self.file = OpenOptions::new()
             .create(true)
-            .write(true)
             .append(true)
             .open(&self.path)?;
         Ok(())

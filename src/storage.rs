@@ -8,6 +8,12 @@ pub struct MemTable {
     schema: Schema,
 }
 
+impl Default for MemTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MemTable {
     pub fn new() -> Self {
         MemTable {
@@ -22,6 +28,10 @@ impl MemTable {
 
     pub fn len(&self) -> usize {
         self.documents.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.documents.is_empty()
     }
 
     pub fn flush(&self, path: &str) -> std::io::Result<()> {
