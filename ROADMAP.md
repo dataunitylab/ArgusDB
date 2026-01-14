@@ -38,7 +38,7 @@ This stage will implement the compaction algorithm for the LSM tree.
 
 # Stage 6 - Internal query API
 
-- [] Define the operators and structures of the internal query algebra in specs/query-algebra.md
+- [x] Define the operators and structures of the internal query algebra in specs/query-algebra.md
 - [] Implement selection of attributes from document collections
 - [] Implement filtering based on constraints on attributes
 
