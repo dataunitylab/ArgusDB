@@ -2,6 +2,7 @@ use serde_json::Value;
 use std::cmp::Ordering;
 use std::str::FromStr;
 use jsonpath_rust::JsonPath;
+use crate::db::DB;
 
 #[derive(Debug, Clone)]
 pub enum Expression {
@@ -45,17 +46,7 @@ pub enum Statement {
     Select(LogicalPlan),
 }
 
-pub trait QueryOperator {
-    fn next(&mut self) -> Option<(String, Value)>;
-}
-
-impl Iterator for Box<dyn QueryOperator> {
-    type Item = (String, Value);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.as_mut().next()
-    }
-}
+// Iterator implementations for operators
 
 pub struct ScanOperator<'a> {
     iter: Box<dyn Iterator<Item = (String, Value)> + 'a>,
@@ -67,25 +58,27 @@ impl<'a> ScanOperator<'a> {
     }
 }
 
-impl<'a> QueryOperator for ScanOperator<'a> {
-    fn next(&mut self) -> Option<(String, Value)> {
+impl<'a> Iterator for ScanOperator<'a> {
+    type Item = (String, Value);
+    fn next(&mut self) -> Option<Self::Item> {
         self.iter.next()
     }
 }
 
-pub struct FilterOperator {
-    child: Box<dyn QueryOperator>,
+pub struct FilterOperator<'a> {
+    child: Box<dyn Iterator<Item = (String, Value)> + 'a>,
     predicate: Expression,
 }
 
-impl FilterOperator {
-    pub fn new(child: Box<dyn QueryOperator>, predicate: Expression) -> Self {
+impl<'a> FilterOperator<'a> {
+    pub fn new(child: Box<dyn Iterator<Item = (String, Value)> + 'a>, predicate: Expression) -> Self {
         FilterOperator { child, predicate }
     }
 }
 
-impl QueryOperator for FilterOperator {
-    fn next(&mut self) -> Option<(String, Value)> {
+impl<'a> Iterator for FilterOperator<'a> {
+    type Item = (String, Value);
+    fn next(&mut self) -> Option<Self::Item> {
         while let Some((id, doc)) = self.child.next() {
             if evaluate_expression(&self.predicate, &doc) == Value::Bool(true) {
                 return Some((id, doc));
@@ -95,19 +88,20 @@ impl QueryOperator for FilterOperator {
     }
 }
 
-pub struct ProjectOperator {
-    child: Box<dyn QueryOperator>,
+pub struct ProjectOperator<'a> {
+    child: Box<dyn Iterator<Item = (String, Value)> + 'a>,
     projections: Vec<Expression>, 
 }
 
-impl ProjectOperator {
-    pub fn new(child: Box<dyn QueryOperator>, projections: Vec<Expression>) -> Self {
+impl<'a> ProjectOperator<'a> {
+    pub fn new(child: Box<dyn Iterator<Item = (String, Value)> + 'a>, projections: Vec<Expression>) -> Self {
         ProjectOperator { child, projections }
     }
 }
 
-impl QueryOperator for ProjectOperator {
-    fn next(&mut self) -> Option<(String, Value)> {
+impl<'a> Iterator for ProjectOperator<'a> {
+    type Item = (String, Value);
+    fn next(&mut self) -> Option<Self::Item> {
         if let Some((id, doc)) = self.child.next() {
             let mut new_doc = serde_json::Map::new();
             for expr in &self.projections {
@@ -130,20 +124,21 @@ impl QueryOperator for ProjectOperator {
     }
 }
 
-pub struct LimitOperator {
-    child: Box<dyn QueryOperator>,
+pub struct LimitOperator<'a> {
+    child: Box<dyn Iterator<Item = (String, Value)> + 'a>,
     limit: usize,
     count: usize,
 }
 
-impl LimitOperator {
-    pub fn new(child: Box<dyn QueryOperator>, limit: usize) -> Self {
+impl<'a> LimitOperator<'a> {
+    pub fn new(child: Box<dyn Iterator<Item = (String, Value)> + 'a>, limit: usize) -> Self {
         LimitOperator { child, limit, count: 0 }
     }
 }
 
-impl QueryOperator for LimitOperator {
-    fn next(&mut self) -> Option<(String, Value)> {
+impl<'a> Iterator for LimitOperator<'a> {
+    type Item = (String, Value);
+    fn next(&mut self) -> Option<Self::Item> {
         if self.count >= self.limit {
             return None;
         }
@@ -155,20 +150,21 @@ impl QueryOperator for LimitOperator {
     }
 }
 
-pub struct OffsetOperator {
-    child: Box<dyn QueryOperator>,
+pub struct OffsetOperator<'a> {
+    child: Box<dyn Iterator<Item = (String, Value)> + 'a>,
     offset: usize,
     skipped: usize,
 }
 
-impl OffsetOperator {
-    pub fn new(child: Box<dyn QueryOperator>, offset: usize) -> Self {
+impl<'a> OffsetOperator<'a> {
+    pub fn new(child: Box<dyn Iterator<Item = (String, Value)> + 'a>, offset: usize) -> Self {
         OffsetOperator { child, offset, skipped: 0 }
     }
 }
 
-impl QueryOperator for OffsetOperator {
-    fn next(&mut self) -> Option<(String, Value)> {
+impl<'a> Iterator for OffsetOperator<'a> {
+    type Item = (String, Value);
+    fn next(&mut self) -> Option<Self::Item> {
         while self.skipped < self.offset {
             if self.child.next().is_none() {
                 return None;
@@ -271,34 +267,45 @@ fn compare_values(left: &Value, right: &Value) -> Option<Ordering> {
     }
 }
 
+pub fn execute_plan<'a>(plan: LogicalPlan, db: &'a DB) -> Box<dyn Iterator<Item = (String, Value)> + 'a> {
+    match plan {
+        LogicalPlan::Scan { .. } => {
+            let iter = db.scan();
+            Box::new(ScanOperator::new(Box::new(iter)))
+        }
+        LogicalPlan::Filter { input, predicate } => {
+            let child = execute_plan(*input, db);
+            Box::new(FilterOperator::new(child, predicate))
+        }
+        LogicalPlan::Project { input, projections } => {
+            let child = execute_plan(*input, db);
+            Box::new(ProjectOperator::new(child, projections))
+        }
+        LogicalPlan::Limit { input, limit } => {
+            let child = execute_plan(*input, db);
+            Box::new(LimitOperator::new(child, limit))
+        }
+        LogicalPlan::Offset { input, offset } => {
+            let child = execute_plan(*input, db);
+            Box::new(OffsetOperator::new(child, offset))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
 
-    struct MockSource {
-        data: std::vec::IntoIter<(String, Value)>,
-    }
-
-    impl MockSource {
-        fn new(data: Vec<(String, Value)>) -> Self {
-            MockSource { data: data.into_iter() }
-        }
-    }
-
-    impl QueryOperator for MockSource {
-        fn next(&mut self) -> Option<(String, Value)> {
-            self.data.next()
-        }
-    }
-
+    // Helper to create a mock source
+    // Since we now use standard Iterator, we can just use vec::IntoIter
+    
     #[test]
     fn test_scan() {
         let data = vec![
             ("1".to_string(), json!({"a": 1})),
             ("2".to_string(), json!({"a": 2})),
         ];
-        // ScanOperator wraps Iterator, MockSource wraps IntoIter
         let source_iter = Box::new(data.into_iter());
         let mut scan = ScanOperator::new(source_iter);
         
@@ -314,7 +321,7 @@ mod tests {
             ("2".to_string(), json!({"a": 2, "b": "no"})),
             ("3".to_string(), json!({"a": 3, "b": "yes"})),
         ];
-        let source = Box::new(MockSource::new(data));
+        let source = Box::new(data.into_iter());
         
         let predicate = Expression::Logical {
             left: Box::new(Expression::Binary {
@@ -343,7 +350,7 @@ mod tests {
             ("1".to_string(), json!({"a": {"b": 10}})),
             ("2".to_string(), json!({"a": {"b": 20}})),
         ];
-        let source = Box::new(MockSource::new(data));
+        let source = Box::new(data.into_iter());
 
         // Filter: $.a.b > 15
         let predicate = Expression::Binary {
@@ -364,7 +371,7 @@ mod tests {
         let data = vec![
             ("1".to_string(), json!({"a": 1, "b": 2, "c": 3})),
         ];
-        let source = Box::new(MockSource::new(data));
+        let source = Box::new(data.into_iter());
         
         let projections = vec![
             Expression::FieldReference("a".to_string()),
@@ -389,7 +396,7 @@ mod tests {
             ("3".to_string(), json!({"a": 3})),
             ("4".to_string(), json!({"a": 4})),
         ];
-        let source = Box::new(MockSource::new(data));
+        let source = Box::new(data.into_iter());
         
         let offset_op = Box::new(OffsetOperator::new(source, 1));
         let mut limit_op = LimitOperator::new(offset_op, 2);

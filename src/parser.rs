@@ -35,9 +35,9 @@ pub fn parse(sql: &str) -> Result<Statement, String> {
     }
 
     match &ast[0] {
-        ast::Statement::Insert { table_name, source, .. } => {
-            let collection = table_name.to_string();
-            let documents = convert_insert_source(source)?;
+        ast::Statement::Insert(insert) => {
+            let collection = insert.table.to_string();
+            let documents = convert_insert_source(&insert.source)?;
             Ok(Statement::Insert { collection, documents })
         }
         ast::Statement::Query(query) => {
@@ -61,7 +61,6 @@ fn convert_insert_source(source: &Option<Box<ast::Query>>) -> Result<Vec<Value>,
                 let expr = &row[0];
                 match expr {
                     Expr::Identifier(ident) => {
-                        // We expect a backtick-quoted identifier which contains the JSON
                         let json_str = &ident.value;
                         let value: Value = serde_json::from_str(json_str).map_err(|e| format!("Invalid JSON in INSERT: {}", e))?;
                         docs.push(value);
@@ -81,16 +80,15 @@ fn convert_query(query: &ast::Query) -> Result<LogicalPlan, String> {
 
     if let Some(limit_clause) = &query.limit_clause {
          match limit_clause {
-             LimitClause::Limit { limit, offset } => {
-                 limit_val = Some(parse_limit_expr(limit)?);
-                 if let Some(off) = offset {
-                     offset_val = Some(parse_limit_expr(off)?);
+             LimitClause::LimitOffset { limit, offset, .. } => {
+                 if let Some(l) = limit {
+                     limit_val = Some(parse_limit_expr(l)?);
+                 }
+                 if let Some(o) = offset {
+                     offset_val = Some(parse_limit_expr(&o.value)?);
                  }
              }
-             LimitClause::LimitOffset { limit, offset } => {
-                 limit_val = Some(parse_limit_expr(limit)?);
-                 offset_val = Some(parse_limit_expr(offset)?);
-             }
+             _ => {}
          }
     }
 
@@ -245,6 +243,23 @@ fn convert_expr(expr: &Expr) -> Result<Expression, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sqlparser::dialect::GenericDialect;
+
+    #[test]
+    fn debug_ast() {
+        let dialect = GenericDialect {};
+        let sql = "INSERT INTO t VALUES (1)";
+        if let Ok(ast) = Parser::parse_sql(&dialect, sql) {
+            println!("INSERT AST: {:?}", ast);
+        } else {
+            println!("Parse failed");
+        }
+
+        let sql = "SELECT * FROM t LIMIT 1 OFFSET 2";
+        if let Ok(ast) = Parser::parse_sql(&dialect, sql) {
+            println!("SELECT AST: {:?}", ast);
+        }
+    }
 
     #[test]
     fn test_parse_insert() {
