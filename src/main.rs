@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use clap::Parser;
 use futures::stream;
 use pgwire::api::Type;
 use pgwire::api::auth::StartupHandler;
@@ -23,6 +24,19 @@ pub mod storage;
 use crate::db::DB;
 use crate::parser as argus_parser;
 use crate::query::{Statement, execute_plan};
+
+/// ArgusDB Server
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    /// Host to bind to
+    #[arg(short, long, default_value = "127.0.0.1")]
+    host: String,
+
+    /// Port to bind to
+    #[arg(short, long, default_value_t = 5432)]
+    port: u16,
+}
 
 pub struct ArgusHandler {
     db: Arc<Mutex<DB>>,
@@ -142,12 +156,13 @@ impl PgWireServerHandlers for ArgusProcessor {
 
 #[tokio::main]
 async fn main() {
+    let args = Args::parse();
     let db = Arc::new(Mutex::new(DB::new("argus_data")));
     let handler = Arc::new(ArgusHandler::new(db));
     let processor = Arc::new(ArgusProcessor { handler });
 
-    let server_addr = "127.0.0.1:5432";
-    let listener = TcpListener::bind(server_addr).await.unwrap();
+    let server_addr = format!("{}:{}", args.host, args.port);
+    let listener = TcpListener::bind(&server_addr).await.unwrap();
     println!("ArgusDB server listening on {}", server_addr);
 
     loop {
@@ -155,9 +170,7 @@ async fn main() {
         let processor = processor.clone();
 
         tokio::spawn(async move {
-            process_socket(socket, None, processor)
-                .await
-                .expect("Failed to process socket");
+            let _ = process_socket(socket, None, processor).await;
         });
     }
 }
