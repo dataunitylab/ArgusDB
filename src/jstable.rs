@@ -220,7 +220,7 @@ mod tests {
         let file = NamedTempFile::new().unwrap();
         jstable.write(file.path().to_str().unwrap()).unwrap();
 
-        let mut iterator = JSTableIterator::new(file.path().to_str().unwrap())?;
+        let iterator = JSTableIterator::new(file.path().to_str().unwrap())?;
         assert_eq!(iterator.timestamp, 12345);
 
         let mut count = 0;

@@ -60,11 +60,7 @@ impl SimpleQueryHandler for ArgusHandler {
             Ok(s) => s,
             Err(e) => {
                 return Ok(vec![Response::Error(Box::new(
-                    PgWireError::ApiError(Box::new(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        e,
-                    )))
-                    .into(),
+                    PgWireError::ApiError(Box::new(std::io::Error::other(e))).into(),
                 ))]);
             }
         };
@@ -86,7 +82,7 @@ impl SimpleQueryHandler for ArgusHandler {
                 )))])
             }
             Statement::Select(plan) => {
-                let iter = execute_plan(plan, &*db);
+                let iter = execute_plan(plan, &db);
 
                 let mut rows_data = Vec::new();
                 for (_, doc) in iter {
@@ -103,9 +99,7 @@ impl SimpleQueryHandler for ArgusHandler {
                 let obj = first.as_object().unwrap();
                 let fields: Vec<FieldInfo> = obj
                     .keys()
-                    .map(|k| {
-                        FieldInfo::new(k.clone().into(), None, None, Type::JSON, FieldFormat::Text)
-                    })
+                    .map(|k| FieldInfo::new(k.clone(), None, None, Type::JSON, FieldFormat::Text))
                     .collect();
                 let fields = Arc::new(fields);
 

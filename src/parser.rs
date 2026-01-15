@@ -11,13 +11,13 @@ struct ArgusDialect;
 
 impl Dialect for ArgusDialect {
     fn is_identifier_start(&self, ch: char) -> bool {
-        (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_' || ch == '$'
+        ('a'..='z').contains(&ch) || ('A'..='Z').contains(&ch) || ch == '_' || ch == '$'
     }
 
     fn is_identifier_part(&self, ch: char) -> bool {
-        (ch >= 'a' && ch <= 'z')
-            || (ch >= 'A' && ch <= 'Z')
-            || (ch >= '0' && ch <= '9')
+        ('a'..='z').contains(&ch)
+            || ('A'..='Z').contains(&ch)
+            || ('0'..='9').contains(&ch)
             || ch == '_'
             || ch == '$'
     }
@@ -85,16 +85,13 @@ fn convert_query(query: &ast::Query) -> Result<LogicalPlan, String> {
     let mut offset_val = None;
 
     if let Some(limit_clause) = &query.limit_clause {
-        match limit_clause {
-            LimitClause::LimitOffset { limit, offset, .. } => {
-                if let Some(l) = limit {
-                    limit_val = Some(parse_limit_expr(l)?);
-                }
-                if let Some(o) = offset {
-                    offset_val = Some(parse_limit_expr(&o.value)?);
-                }
+        if let LimitClause::LimitOffset { limit, offset, .. } = limit_clause {
+            if let Some(l) = limit {
+                limit_val = Some(parse_limit_expr(l)?);
             }
-            _ => {}
+            if let Some(o) = offset {
+                offset_val = Some(parse_limit_expr(&o.value)?);
+            }
         }
     }
 
@@ -266,7 +263,8 @@ mod tests {
 
     #[test]
     fn test_parse_insert() {
-        let sql = r#"INSERT INTO users VALUES (`{"name": "Alice", "age": 30}`), (`{"name": "Bob"}`)"#;
+        let sql =
+            r#"INSERT INTO users VALUES (`{"name": "Alice", "age": 30}`), (`{"name": "Bob"}`)"#;
         let stmt = parse(sql).unwrap();
         match stmt {
             Statement::Insert {

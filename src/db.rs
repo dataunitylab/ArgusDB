@@ -63,12 +63,12 @@ impl<'a> Iterator for MergedIterator<'a> {
                 }
             }
 
-            if let Some(doc) = result {
-                if !doc.is_null() {
-                    return Some((min_id, doc));
-                }
-                // If null (tombstone), loop again
+            if let Some(doc) = result
+                && !doc.is_null()
+            {
+                return Some((min_id, doc));
             }
+            // If null (tombstone), loop again
         }
     }
 }

@@ -105,7 +105,7 @@ impl<'a> FilterOperator<'a> {
 impl<'a> Iterator for FilterOperator<'a> {
     type Item = (String, Value);
     fn next(&mut self) -> Option<Self::Item> {
-        while let Some((id, doc)) = self.child.next() {
+        for (id, doc) in self.child.by_ref() {
             if evaluate_expression(&self.predicate, &doc) == Value::Bool(true) {
                 return Some((id, doc));
             }
@@ -203,9 +203,7 @@ impl<'a> Iterator for OffsetOperator<'a> {
     type Item = (String, Value);
     fn next(&mut self) -> Option<Self::Item> {
         while self.skipped < self.offset {
-            if self.child.next().is_none() {
-                return None;
-            }
+            self.child.next()?;
             self.skipped += 1;
         }
         self.child.next()
