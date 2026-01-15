@@ -263,27 +263,10 @@ fn convert_expr(expr: &Expr) -> Result<Expression, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sqlparser::dialect::GenericDialect;
-
-    #[test]
-    fn debug_ast() {
-        let dialect = GenericDialect {};
-        let sql = "INSERT INTO t VALUES (1)";
-        if let Ok(ast) = Parser::parse_sql(&dialect, sql) {
-            println!("INSERT AST: {:?}", ast);
-        } else {
-            println!("Parse failed");
-        }
-
-        let sql = "SELECT * FROM t LIMIT 1 OFFSET 2";
-        if let Ok(ast) = Parser::parse_sql(&dialect, sql) {
-            println!("SELECT AST: {:?}", ast);
-        }
-    }
 
     #[test]
     fn test_parse_insert() {
-        let sql = r#"INSERT INTO users VALUES `{"name": "Alice", "age": 30}`, `{"name": "Bob"}`"#;
+        let sql = r#"INSERT INTO users VALUES (`{"name": "Alice", "age": 30}`), (`{"name": "Bob"}`)"#;
         let stmt = parse(sql).unwrap();
         match stmt {
             Statement::Insert {
