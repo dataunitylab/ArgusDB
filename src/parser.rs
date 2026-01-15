@@ -9,7 +9,7 @@ struct ArgusDialect;
 
 impl Dialect for ArgusDialect {
     fn is_identifier_start(&self, ch: char) -> bool {
-        (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_'
+        (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_' || ch == '$'
     }
 
     fn is_identifier_part(&self, ch: char) -> bool {
@@ -17,6 +17,7 @@ impl Dialect for ArgusDialect {
             || (ch >= 'A' && ch <= 'Z')
             || (ch >= '0' && ch <= '9')
             || ch == '_'
+            || ch == '$'
     }
 
     fn is_delimited_identifier_start(&self, ch: char) -> bool {
@@ -174,10 +175,21 @@ fn convert_select(select: &ast::Select) -> Result<LogicalPlan, String> {
 
 fn convert_expr(expr: &Expr) -> Result<Expression, String> {
     match expr {
-        Expr::Identifier(ident) => Ok(Expression::FieldReference(ident.value.clone())),
+        Expr::Identifier(ident) => {
+            let value = ident.value.clone();
+            if value.starts_with('$') {
+                Ok(Expression::JsonPath(value))
+            } else {
+                Ok(Expression::FieldReference(value))
+            }
+        },
         Expr::CompoundIdentifier(idents) => {
             let path = idents.iter().map(|i| i.value.clone()).collect::<Vec<_>>().join(".");
-            Ok(Expression::FieldReference(path))
+            if path.starts_with('$') {
+                Ok(Expression::JsonPath(path))
+            } else {
+                Ok(Expression::FieldReference(path))
+            }
         }
         Expr::Value(val_span) => match &val_span.value {
             ast::Value::Number(n, _) => {
@@ -287,6 +299,35 @@ mod tests {
                 }
             }
             _ => panic!("Expected Select"),
+        }
+    }
+
+    #[test]
+    fn test_parse_jsonpath() {
+        // Test standard dot notation with $
+        let sql = "SELECT $.a.b FROM t";
+        let stmt = parse(sql).unwrap();
+        match stmt {
+            Statement::Select(LogicalPlan::Project { projections, .. }) => {
+                match &projections[0] {
+                    Expression::JsonPath(p) => assert_eq!(p, "$.a.b"),
+                    _ => panic!("Expected JsonPath"),
+                }
+            }
+            _ => panic!("Expected Select Project"),
+        }
+
+        // Test backtick quoted jsonpath with brackets
+        let sql = "SELECT `$.a[0]` FROM t";
+        let stmt = parse(sql).unwrap();
+        match stmt {
+            Statement::Select(LogicalPlan::Project { projections, .. }) => {
+                match &projections[0] {
+                    Expression::JsonPath(p) => assert_eq!(p, "$.a[0]"),
+                    _ => panic!("Expected JsonPath"),
+                }
+            }
+            _ => panic!("Expected Select Project"),
         }
     }
 }

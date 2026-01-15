@@ -59,7 +59,10 @@ The language supports various expressions to interact with JSON data:
 
 *   **Field Access**:
     *   Dot notation: `info.contact` accesses the `contact` field within the `info` object.
-    *   Array Indexing: `contact[0]` accesses the first element of the `contact` array.
+*   **JSONPath**:
+    *   Identifiers starting with `$` are treated as JSONPath expressions.
+    *   Example: `$.store.book[0].title`
+    *   Complex paths containing special characters (like brackets `[]`) should be enclosed in backticks: `` `$.store.book[0].title` ``.
 *   **Literals**:
     *   Strings: `'value'` (single quotes) or `"value"` (double quotes)
     *   Numbers: `123`, `45.67`
@@ -78,9 +81,9 @@ The language supports various expressions to interact with JSON data:
 **Example:**
 
 ```sql
-SELECT name, info.contact[0].tel
+SELECT name, `$.info.contact[0].tel`
 FROM people
-WHERE age >= 21 AND active = TRUE
+WHERE `$.age` >= 21 AND active = TRUE
 LIMIT 10
 OFFSET 5
 ```
