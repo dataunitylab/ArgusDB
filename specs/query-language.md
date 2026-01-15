@@ -16,23 +16,19 @@ The `INSERT` statement is used to add new documents to a collection.
 
 ```sql
 INSERT INTO <collection_name>
-RECORDS <json_object> [, <json_object> ...]
+RECORDS `json_object` [, `json_object` ...]
 ```
 
 **Parameters:**
 
 *   `collection_name`: The name of the collection to insert into.
-*   `json_object`: A standard JSON object literal representing the document. Keys in the JSON object usually do not require quotes if they are simple identifiers, but standard JSON requires quotes. The parser should support standard JSON syntax.
+*   `json_object`: A standard JSON object literal enclosed in backticks (`). This allows for unescaped JSON content to be embedded directly in the query.
 
 **Example:**
 
 ```sql
 INSERT INTO people
-RECORDS {
-    "name": "Alice",
-    "age": 30,
-    "address": {"city": "Paris", "zip": "75001"}
-}
+RECORDS `{"name": "Alice", "age": 30, "address": {"city": "Paris", "zip": "75001"}}`
 ```
 
 ### SELECT

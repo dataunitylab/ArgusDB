@@ -115,7 +115,7 @@ impl Iterator for JSTableIterator {
 }
 
 pub fn read_jstable(path: &str) -> io::Result<JSTable> {
-    let mut iterator = JSTableIterator::new(path)?;
+    let iterator = JSTableIterator::new(path)?;
     let timestamp = iterator.timestamp;
     let schema = iterator.schema.clone();
     

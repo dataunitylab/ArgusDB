@@ -1,119 +1,84 @@
 use crate::query::{Expression, BinaryOperator, LogicalOperator, LogicalPlan, Statement};
 use serde_json::Value;
-use sqlparser::dialect::GenericDialect;
+use sqlparser::dialect::Dialect;
 use sqlparser::parser::Parser;
-use sqlparser::ast::{self, SetExpr, TableFactor, BinaryOperator as SqlBinaryOperator, Expr, LimitClause};
-use nom::{
-    bytes::complete::{tag_no_case, take_while1},
-    character::complete::{multispace0, multispace1, char},
-    sequence::tuple,
-    multi::separated_list1,
-    IResult,
-};
+use sqlparser::ast::{self, SetExpr, TableFactor, BinaryOperator as SqlBinaryOperator, Expr, LimitClause, Values};
+
+#[derive(Debug)]
+struct ArgusDialect;
+
+impl Dialect for ArgusDialect {
+    fn is_identifier_start(&self, ch: char) -> bool {
+        (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_'
+    }
+
+    fn is_identifier_part(&self, ch: char) -> bool {
+        (ch >= 'a' && ch <= 'z')
+            || (ch >= 'A' && ch <= 'Z')
+            || (ch >= '0' && ch <= '9')
+            || ch == '_'
+    }
+
+    fn is_delimited_identifier_start(&self, ch: char) -> bool {
+        ch == '`'
+    }
+}
 
 pub fn parse(sql: &str) -> Result<Statement, String> {
-    let trimmed = sql.trim();
-    if trimmed.to_uppercase().starts_with("INSERT") {
-        parse_insert(trimmed).map_err(|e| format!("Insert parse error: {}", e))
+    let dialect = ArgusDialect {};
+    
+    // Hack: Replace RECORDS with VALUES to satisfy sqlparser
+    // We strictly assume "RECORDS" is used for INSERT.
+    let sql_to_parse = if sql.trim().to_uppercase().starts_with("INSERT") {
+        sql.replacen("RECORDS", "VALUES", 1).replacen("records", "VALUES", 1)
     } else {
-        parse_select(trimmed)
-    }
-}
+        sql.to_string()
+    };
 
-// --- INSERT Parsing (Custom using Nom) ---
-
-fn parse_insert(input: &str) -> Result<Statement, String> {
-    match insert_statement(input) {
-        Ok((_, stmt)) => Ok(stmt),
-        Err(e) => Err(format!("{}", e)),
-    }
-}
-
-fn insert_statement(input: &str) -> IResult<&str, Statement> {
-    // INSERT INTO <collection> RECORDS <json>...
-    let (input, _) = tag_no_case("INSERT")(input)?;
-    let (input, _) = multispace1(input)?;
-    let (input, _) = tag_no_case("INTO")(input)?;
-    let (input, _) = multispace1(input)?;
-    
-    let (input, collection) = identifier(input)?;
-    
-    let (input, _) = multispace1(input)?;
-    let (input, _) = tag_no_case("RECORDS")(input)?;
-    let (input, _) = multispace0(input)?;
-    
-    let (input, documents) = separated_list1(
-        tuple((multispace0, char(','), multispace0)),
-        json_object
-    )(input)?;
-    
-    Ok((input, Statement::Insert {
-        collection: collection.to_string(),
-        documents,
-    }))
-}
-
-fn identifier(input: &str) -> IResult<&str, &str> {
-    take_while1(|c: char| c.is_alphanumeric() || c == '_')(input)
-}
-
-fn json_object(input: &str) -> IResult<&str, Value> {
-    let mut depth = 0;
-    let mut len = 0;
-    let mut found_start = false;
-
-    // Skip leading whitespace
-    let leading_ws = input.chars().take_while(|c| c.is_whitespace()).count();
-    let trimmed_input = &input[leading_ws..];
-    
-    if !trimmed_input.starts_with('{') {
-         return Err(nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Tag)));
-    }
-
-    // Iterate to find the matching brace
-    for (i, c) in trimmed_input.char_indices() {
-        if c == '{' {
-            depth += 1;
-            found_start = true;
-        } else if c == '}' {
-            depth -= 1;
-        }
-        
-        if found_start && depth == 0 {
-            len = i + 1;
-            break;
-        }
-    }
-
-    if depth != 0 {
-        return Err(nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Complete)));
-    }
-
-    let json_str = &trimmed_input[0..len];
-    let value: Value = serde_json::from_str(json_str).map_err(|_| {
-        nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::MapRes))
-    })?;
-
-    Ok((&trimmed_input[len..], value))
-}
-
-
-// --- SELECT Parsing (sqlparser) ---
-
-fn parse_select(sql: &str) -> Result<Statement, String> {
-    let dialect = GenericDialect {};
-    let ast = Parser::parse_sql(&dialect, sql).map_err(|e| e.to_string())?;
+    let ast = Parser::parse_sql(&dialect, &sql_to_parse).map_err(|e| e.to_string())?;
 
     if ast.len() != 1 {
         return Err("Expected exactly one statement".to_string());
     }
 
     match &ast[0] {
+        ast::Statement::Insert { table_name, source, .. } => {
+            let collection = table_name.to_string();
+            let documents = convert_insert_source(source)?;
+            Ok(Statement::Insert { collection, documents })
+        }
         ast::Statement::Query(query) => {
             let logical_plan = convert_query(query)?;
             Ok(Statement::Select(logical_plan))
         }
-        _ => Err("Only SELECT statements are supported".to_string()),
+        _ => Err("Only SELECT and INSERT statements are supported".to_string()),
+    }
+}
+
+fn convert_insert_source(source: &Option<Box<ast::Query>>) -> Result<Vec<Value>, String> {
+    let query = source.as_ref().ok_or("Insert must have a source")?;
+    
+    match &*query.body {
+        SetExpr::Values(Values { rows, .. }) => {
+            let mut docs = Vec::new();
+            for row in rows {
+                if row.len() != 1 {
+                    return Err("Each record must contain exactly one JSON object".to_string());
+                }
+                let expr = &row[0];
+                match expr {
+                    Expr::Identifier(ident) => {
+                        // We expect a backtick-quoted identifier which contains the JSON
+                        let json_str = &ident.value;
+                        let value: Value = serde_json::from_str(json_str).map_err(|e| format!("Invalid JSON in INSERT: {}", e))?;
+                        docs.push(value);
+                    }
+                    _ => return Err("Expected a JSON object enclosed in backticks".to_string()),
+                }
+            }
+            Ok(docs)
+        }
+        _ => Err("INSERT expects VALUES (RECORDS) clause".to_string()),
     }
 }
 
@@ -198,7 +163,6 @@ fn convert_select(select: &ast::Select) -> Result<LogicalPlan, String> {
                 projections.push(convert_expr(expr)?);
             }
             ast::SelectItem::ExprWithAlias { expr, alias: _ } => {
-                // Ignore alias for now as LogicalPlan doesn't support renaming explicitly yet
                 projections.push(convert_expr(expr)?);
             }
             ast::SelectItem::Wildcard(_) => {
@@ -280,7 +244,7 @@ mod tests {
 
     #[test]
     fn test_parse_insert() {
-        let sql = r#"INSERT INTO users RECORDS {"name": "Alice", "age": 30}, {"name": "Bob"}"#;
+        let sql = r#"INSERT INTO users RECORDS `{"name": "Alice", "age": 30}`, `{"name": "Bob"}`"#;
         let stmt = parse(sql).unwrap();
         match stmt {
             Statement::Insert { collection, documents } => {
