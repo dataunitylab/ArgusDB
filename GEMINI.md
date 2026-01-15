@@ -15,10 +15,10 @@
 
 ## Coding style
 
-- Follow the default Rust style and use `cargo rustfmt` to format code if needed
+- Follow the default Rust style and use `cargo fmt` to reformat code before committing
 - Avoid the use of `unsafe` code where possible
 - Add comments to every function added and ensure comments are up-to-date with any changed code
 - Use short, simple documentation tests where possible
 - Always add tests for new features and ensure all tests pass before committing code
 - Create small logical commits for every change to the project
-- Each commit should have a clear and concise description and tests that run successfully
+- Each commit should have a clear and concise description and tests that run successfully (follow the [conventional commits](https://www.conventionalcommits.org/en/v1.0.0/) guidelines)
