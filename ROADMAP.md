@@ -54,6 +54,6 @@ This stage will implement the query language of ArgusDB.
 
 The goal of this stage will be to connect the internal API for accessing ArgusDB to the Postgres wire protocol so clients can connect to the database.
 
-- [] Create a binary that starts a Postgres server
-- [] Receive SQL commands from the Postgres server and execute the queries against ArgusDB
-- [] Convert the results of the query into a format they can be passed along to the client
+- [x] Create a binary that starts a Postgres server
+- [x] Receive SQL commands from the Postgres server and execute the queries against ArgusDB
+- [x] Convert the results of the query into a format they can be passed along to the client

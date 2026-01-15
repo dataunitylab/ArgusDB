@@ -100,37 +100,41 @@ struct ArgusProcessor {
     handler: Arc<ArgusHandler>,
 }
 
-// ... imports
-
-// Commented out to allow compilation for debugging
-/*
 impl PgWireServerHandlers for ArgusProcessor {
-    type StartupHandler = pgwire::api::NoopHandler;
-    type SimpleQueryHandler = ArgusHandler;
-    type ExtendedQueryHandler = pgwire::api::NoopHandler;
-    type ErrorHandler = pgwire::api::NoopHandler;
-
-    fn simple_query_handler(&self) -> Arc<Self::SimpleQueryHandler> {
+    fn simple_query_handler(&self) -> Arc<ArgusHandler> {
         self.handler.clone()
     }
 
-    fn startup_handler(&self) -> Arc<Self::StartupHandler> {
+    fn startup_handler(&self) -> Arc<pgwire::api::NoopHandler> {
         Arc::new(pgwire::api::NoopHandler)
     }
 
-    fn extended_query_handler(&self) -> Arc<Self::ExtendedQueryHandler> {
+    fn extended_query_handler(&self) -> Arc<pgwire::api::NoopHandler> {
         Arc::new(pgwire::api::NoopHandler)
     }
 
-    fn error_handler(&self) -> Arc<Self::ErrorHandler> {
+    fn error_handler(&self) -> Arc<pgwire::api::NoopHandler> {
         Arc::new(pgwire::api::NoopHandler)
     }
 }
-*/
 
-// Placeholder main to allow test execution
 #[tokio::main]
 async fn main() {
-    println!("Server placeholder");
+    let db = Arc::new(Mutex::new(DB::new("argus_data")));
+    let handler = Arc::new(ArgusHandler::new(db));
+    let processor = Arc::new(ArgusProcessor { handler });
+
+    let server_addr = "127.0.0.1:5432";
+    let listener = TcpListener::bind(server_addr).await.unwrap();
+    println!("ArgusDB server listening on {}", server_addr);
+
+    loop {
+        let (socket, _) = listener.accept().await.unwrap();
+        let processor = processor.clone();
+
+        tokio::spawn(async move {
+            process_socket(socket, None, processor).await;
+        });
+    }
 }
 
