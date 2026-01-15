@@ -1,5 +1,6 @@
 use async_trait::async_trait;
-use clap::Parser;
+use config::{Config, Environment};
+use serde::Deserialize;
 use futures::stream;
 use pgwire::api::Type;
 use pgwire::api::auth::StartupHandler;
@@ -25,17 +26,20 @@ use crate::db::DB;
 use crate::parser as argus_parser;
 use crate::query::{Statement, execute_plan};
 
-/// ArgusDB Server
-#[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
-struct Args {
-    /// Host to bind to
-    #[arg(short, long, default_value = "127.0.0.1")]
+#[derive(Debug, Deserialize)]
+struct Settings {
+    #[serde(default = "default_host")]
     host: String,
-
-    /// Port to bind to
-    #[arg(short, long, default_value_t = 5432)]
+    #[serde(default = "default_port")]
     port: u16,
+}
+
+fn default_host() -> String {
+    "127.0.0.1".to_string()
+}
+
+fn default_port() -> u16 {
+    5432
 }
 
 pub struct ArgusHandler {
@@ -60,7 +64,11 @@ impl SimpleQueryHandler for ArgusHandler {
             Ok(s) => s,
             Err(e) => {
                 return Ok(vec![Response::Error(Box::new(
-                    PgWireError::ApiError(Box::new(std::io::Error::other(e))).into(),
+                    PgWireError::ApiError(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        e,
+                    )))
+                    .into(),
                 ))]);
             }
         };
@@ -82,7 +90,7 @@ impl SimpleQueryHandler for ArgusHandler {
                 )))])
             }
             Statement::Select(plan) => {
-                let iter = execute_plan(plan, &db);
+                let iter = execute_plan(plan, &*db);
 
                 let mut rows_data = Vec::new();
                 for (_, doc) in iter {
@@ -99,7 +107,9 @@ impl SimpleQueryHandler for ArgusHandler {
                 let obj = first.as_object().unwrap();
                 let fields: Vec<FieldInfo> = obj
                     .keys()
-                    .map(|k| FieldInfo::new(k.clone(), None, None, Type::JSON, FieldFormat::Text))
+                    .map(|k| {
+                        FieldInfo::new(k.clone().into(), None, None, Type::JSON, FieldFormat::Text)
+                    })
                     .collect();
                 let fields = Arc::new(fields);
 
@@ -150,12 +160,18 @@ impl PgWireServerHandlers for ArgusProcessor {
 
 #[tokio::main]
 async fn main() {
-    let args = Args::parse();
+    let settings = Config::builder()
+        .add_source(Environment::with_prefix("ARGUS"))
+        .build()
+        .unwrap()
+        .try_deserialize::<Settings>()
+        .unwrap();
+
     let db = Arc::new(Mutex::new(DB::new("argus_data")));
     let handler = Arc::new(ArgusHandler::new(db));
     let processor = Arc::new(ArgusProcessor { handler });
 
-    let server_addr = format!("{}:{}", args.host, args.port);
+    let server_addr = format!("{}:{}", settings.host, settings.port);
     let listener = TcpListener::bind(&server_addr).await.unwrap();
     println!("ArgusDB server listening on {}", server_addr);
 
