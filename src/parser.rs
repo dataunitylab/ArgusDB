@@ -27,15 +27,7 @@ impl Dialect for ArgusDialect {
 pub fn parse(sql: &str) -> Result<Statement, String> {
     let dialect = ArgusDialect {};
     
-    // Hack: Replace RECORDS with VALUES to satisfy sqlparser
-    // We strictly assume "RECORDS" is used for INSERT.
-    let sql_to_parse = if sql.trim().to_uppercase().starts_with("INSERT") {
-        sql.replacen("RECORDS", "VALUES", 1).replacen("records", "VALUES", 1)
-    } else {
-        sql.to_string()
-    };
-
-    let ast = Parser::parse_sql(&dialect, &sql_to_parse).map_err(|e| e.to_string())?;
+    let ast = Parser::parse_sql(&dialect, sql).map_err(|e| e.to_string())?;
 
     if ast.len() != 1 {
         return Err("Expected exactly one statement".to_string());
@@ -78,7 +70,7 @@ fn convert_insert_source(source: &Option<Box<ast::Query>>) -> Result<Vec<Value>,
             }
             Ok(docs)
         }
-        _ => Err("INSERT expects VALUES (RECORDS) clause".to_string()),
+        _ => Err("INSERT expects VALUES clause".to_string()),
     }
 }
 
@@ -244,7 +236,7 @@ mod tests {
 
     #[test]
     fn test_parse_insert() {
-        let sql = r#"INSERT INTO users RECORDS `{"name": "Alice", "age": 30}`, `{"name": "Bob"}`"#;
+        let sql = r#"INSERT INTO users VALUES `{"name": "Alice", "age": 30}`, `{"name": "Bob"}`"#;
         let stmt = parse(sql).unwrap();
         match stmt {
             Statement::Insert { collection, documents } => {

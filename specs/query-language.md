@@ -16,7 +16,7 @@ The `INSERT` statement is used to add new documents to a collection.
 
 ```sql
 INSERT INTO <collection_name>
-RECORDS `json_object` [, `json_object` ...]
+VALUES `json_object` [, `json_object` ...]
 ```
 
 **Parameters:**
@@ -28,7 +28,7 @@ RECORDS `json_object` [, `json_object` ...]
 
 ```sql
 INSERT INTO people
-RECORDS `{"name": "Alice", "age": 30, "address": {"city": "Paris", "zip": "75001"}}`
+VALUES `{"name": "Alice", "age": 30, "address": {"city": "Paris", "zip": "75001"}}`
 ```
 
 ### SELECT
