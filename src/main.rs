@@ -2,9 +2,10 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::net::TcpListener;
-use pgwire::api::query::{SimpleQueryHandler};
+use pgwire::api::auth::StartupHandler;
+use pgwire::api::query::{SimpleQueryHandler, ExtendedQueryHandler};
 use pgwire::api::results::{DataRowEncoder, FieldInfo, Response, QueryResponse, Tag, FieldFormat};
-use pgwire::api::{ClientInfo, PgWireServerHandlers};
+use pgwire::api::{ClientInfo, PgWireServerHandlers, ErrorHandler};
 use pgwire::error::{PgWireResult, PgWireError};
 use pgwire::tokio::process_socket;
 use pgwire::api::Type;
@@ -101,19 +102,19 @@ struct ArgusProcessor {
 }
 
 impl PgWireServerHandlers for ArgusProcessor {
-    fn simple_query_handler(&self) -> Arc<ArgusHandler> {
+    fn simple_query_handler(&self) -> Arc<impl SimpleQueryHandler> {
         self.handler.clone()
     }
 
-    fn startup_handler(&self) -> Arc<pgwire::api::NoopHandler> {
+    fn startup_handler(&self) -> Arc<impl StartupHandler> {
         Arc::new(pgwire::api::NoopHandler)
     }
 
-    fn extended_query_handler(&self) -> Arc<pgwire::api::NoopHandler> {
+    fn extended_query_handler(&self) -> Arc<impl ExtendedQueryHandler> {
         Arc::new(pgwire::api::NoopHandler)
     }
 
-    fn error_handler(&self) -> Arc<pgwire::api::NoopHandler> {
+    fn error_handler(&self) -> Arc<impl ErrorHandler> {
         Arc::new(pgwire::api::NoopHandler)
     }
 }
@@ -133,7 +134,7 @@ async fn main() {
         let processor = processor.clone();
 
         tokio::spawn(async move {
-            process_socket(socket, None, processor).await;
+            process_socket(socket, None, processor).await.expect("Failed to process socket");
         });
     }
 }
