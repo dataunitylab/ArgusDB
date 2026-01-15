@@ -3,8 +3,8 @@ use crate::log::{LogEntry, Logger, Operation};
 use crate::storage::MemTable;
 use serde_json::Value;
 use std::fs;
-use uuid::Uuid;
 use std::iter::Peekable;
+use uuid::Uuid;
 
 const MEMTABLE_THRESHOLD: usize = 10;
 const JSTABLE_THRESHOLD: u64 = 5;
@@ -111,7 +111,11 @@ impl DB {
         let mut sources: Vec<Peekable<Box<dyn Iterator<Item = (String, Value)>>>> = Vec::new();
 
         // 1. MemTable Iterator (Priority 0 - Highest)
-        let mem_iter = self.memtable.documents.iter().map(|(k, v)| (k.clone(), v.clone()));
+        let mem_iter = self
+            .memtable
+            .documents
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()));
         sources.push((Box::new(mem_iter) as Box<dyn Iterator<Item = (String, Value)>>).peekable());
 
         // 2. JSTable Iterators (Newer to Older)
@@ -120,7 +124,8 @@ impl DB {
             if let Ok(iter) = jstable::JSTableIterator::new(&path) {
                 // Map Result to Value, unwrapping errors for now
                 let iter = iter.map(|r| r.unwrap());
-                sources.push((Box::new(iter) as Box<dyn Iterator<Item = (String, Value)>>).peekable());
+                sources
+                    .push((Box::new(iter) as Box<dyn Iterator<Item = (String, Value)>>).peekable());
             }
         }
 
@@ -295,7 +300,7 @@ mod tests {
         // Verify data is preserved
         // We inserted 0..50 (50 items) + 1 (999). 51 items total.
         // Item "0" should be in the compacted table.
-        // We can't easily query DB yet (no read path implemented in DB), 
+        // We can't easily query DB yet (no read path implemented in DB),
         // so we manually check the file.
         let jstable_path = format!("{}/jstable-0", dir.path().to_str().unwrap());
         let table = jstable::read_jstable(&jstable_path).unwrap();
@@ -310,7 +315,7 @@ mod tests {
 
         // 1. Insert doc to be deleted
         let id_to_delete = db.insert(json!({ "a": 100 }));
-        
+
         // Fill memtable to force flush 1 (jstable-0)
         // 1 item already inserted. Insert 9 more to fill (total 10).
         for i in 0..9 {
@@ -318,7 +323,7 @@ mod tests {
         }
         // 11th insert triggers flush of the first 10
         db.insert(json!({ "trigger_1": 1 }));
-        assert_eq!(db.jstable_count, 1); 
+        assert_eq!(db.jstable_count, 1);
 
         // 2. Delete the doc
         // id_to_delete is in jstable-0.
@@ -326,7 +331,7 @@ mod tests {
         // memtable currently has "trigger_1" (1 item).
         // delete adds 1 item. len = 2.
         db.delete(&id_to_delete);
-        
+
         // Fill memtable to force flush 2 (jstable-1)
         // Memtable len is 2. Need 8 more to fill (total 10).
         for i in 0..8 {
@@ -334,7 +339,7 @@ mod tests {
         }
         // 11th insert (relative to this batch) triggers flush
         db.insert(json!({ "trigger_2": 1 }));
-        assert_eq!(db.jstable_count, 2); 
+        assert_eq!(db.jstable_count, 2);
 
         // 3. Create 3 more tables to reach threshold 5
         for t in 0..3 {
@@ -350,12 +355,12 @@ mod tests {
         // After 3rd iteration (total 5th flush), compaction triggers.
         // jstable_count goes 4 -> 5 -> 1.
         assert_eq!(db.jstable_count, 1);
-        
+
         // 4. Verify id_to_delete is NOT in jstable-0
         let jstable_path = format!("{}/jstable-0", dir.path().to_str().unwrap());
         let table = jstable::read_jstable(&jstable_path).unwrap();
         assert!(!table.documents.contains_key(&id_to_delete));
-        
+
         // Verify other documents exist (e.g. from flush 1)
         assert!(table.documents.len() > 40);
     }
@@ -369,12 +374,12 @@ mod tests {
         // 0..9
         let mut ids = Vec::new();
         for i in 0..MEMTABLE_THRESHOLD {
-             ids.push(db.insert(json!({"val": i})));
+            ids.push(db.insert(json!({"val": i})));
         }
         // This filled memtable (10 items). Next insert triggers flush.
-        
+
         // 2. Insert into MemTable (triggers flush of 0..9 to jstable-0)
-        let id_val_10 = db.insert(json!({"val": 10})); 
+        let id_val_10 = db.insert(json!({"val": 10}));
         // Memtable has 1 item (val 10). jstable-0 has 10 items.
 
         // 3. Shadowing: Update an item from jstable-0
@@ -392,14 +397,14 @@ mod tests {
 
         // Check shadowing
         assert_eq!(results.get(&id_to_shadow).unwrap(), &json!({"val": 999}));
-        
+
         // Check deletion
         assert!(!results.contains_key(&id_to_delete));
-        
+
         // Check preservation of older jstable item
         let id_preserved = ids[2].clone(); // val: 2
         assert_eq!(results.get(&id_preserved).unwrap(), &json!({"val": 2}));
-        
+
         // Check memtable item
         assert_eq!(results.get(&id_val_10).unwrap(), &json!({"val": 10}));
     }

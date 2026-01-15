@@ -1,5 +1,5 @@
 use crate::jstable::JSTable;
-use crate::schema::{infer_schema, Schema};
+use crate::schema::{Schema, infer_schema};
 use serde_json::Value;
 use std::collections::BTreeMap;
 

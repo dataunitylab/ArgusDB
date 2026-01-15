@@ -7,17 +7,9 @@ use std::path::{Path, PathBuf};
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum Operation {
-    Insert {
-        id: String,
-        doc: Value,
-    },
-    Update {
-        id: String,
-        doc: Value,
-    },
-    Delete {
-        id: String,
-    },
+    Insert { id: String, doc: Value },
+    Update { id: String, doc: Value },
+    Delete { id: String },
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -35,10 +27,7 @@ pub struct Logger {
 impl Logger {
     pub fn new<P: AsRef<Path>>(path: P, rotation_threshold: u64) -> std::io::Result<Self> {
         let path = path.as_ref().to_path_buf();
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)?;
+        let file = OpenOptions::new().create(true).append(true).open(&path)?;
         Ok(Logger {
             file,
             path,
@@ -50,10 +39,7 @@ impl Logger {
         if self.file.metadata()?.len() > self.rotation_threshold {
             self.rotate()?;
         }
-        let entry = LogEntry {
-            ts: Utc::now(),
-            op,
-        };
+        let entry = LogEntry { ts: Utc::now(), op };
         let json = serde_json::to_string(&entry)?;
         writeln!(self.file, "{}", json)
     }

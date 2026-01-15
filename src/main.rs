@@ -1,24 +1,24 @@
 use async_trait::async_trait;
-use std::sync::Arc;
-use tokio::sync::Mutex;
-use tokio::net::TcpListener;
-use pgwire::api::auth::StartupHandler;
-use pgwire::api::query::{SimpleQueryHandler, ExtendedQueryHandler};
-use pgwire::api::results::{DataRowEncoder, FieldInfo, Response, QueryResponse, Tag, FieldFormat};
-use pgwire::api::{ClientInfo, PgWireServerHandlers, ErrorHandler};
-use pgwire::error::{PgWireResult, PgWireError};
-use pgwire::tokio::process_socket;
-use pgwire::api::Type;
-use pgwire::messages::data::DataRow;
 use futures::stream;
+use pgwire::api::Type;
+use pgwire::api::auth::StartupHandler;
+use pgwire::api::query::{ExtendedQueryHandler, SimpleQueryHandler};
+use pgwire::api::results::{DataRowEncoder, FieldFormat, FieldInfo, QueryResponse, Response, Tag};
+use pgwire::api::{ClientInfo, ErrorHandler, PgWireServerHandlers};
+use pgwire::error::{PgWireError, PgWireResult};
+use pgwire::messages::data::DataRow;
+use pgwire::tokio::process_socket;
+use std::sync::Arc;
+use tokio::net::TcpListener;
+use tokio::sync::Mutex;
 
-pub mod schema;
-pub mod storage;
-pub mod log;
 pub mod db;
 pub mod jstable;
-pub mod query;
+pub mod log;
 pub mod parser;
+pub mod query;
+pub mod schema;
+pub mod storage;
 
 use crate::db::DB;
 use crate::parser as argus_parser;
@@ -41,43 +41,60 @@ impl SimpleQueryHandler for ArgusHandler {
         C: ClientInfo + Unpin + Send + Sync,
     {
         println!("Received query: {}", query);
-        
+
         let stmt = match argus_parser::parse(query) {
             Ok(s) => s,
-            Err(e) => return Ok(vec![Response::Error(Box::new(PgWireError::ApiError(Box::new(std::io::Error::new(std::io::ErrorKind::Other, e))).into()))]),
+            Err(e) => {
+                return Ok(vec![Response::Error(Box::new(
+                    PgWireError::ApiError(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        e,
+                    )))
+                    .into(),
+                ))]);
+            }
         };
 
         let mut db = self.db.lock().await;
 
         match stmt {
-            Statement::Insert { collection: _, documents } => {
+            Statement::Insert {
+                collection: _,
+                documents,
+            } => {
                 let count = documents.len();
                 for doc in documents {
                     db.insert(doc);
                 }
-                Ok(vec![Response::Execution(Tag::new(&format!("INSERT 0 {}", count)))])
+                Ok(vec![Response::Execution(Tag::new(&format!(
+                    "INSERT 0 {}",
+                    count
+                )))])
             }
             Statement::Select(plan) => {
                 let iter = execute_plan(plan, &*db);
-                
+
                 let mut rows_data = Vec::new();
                 for (_, doc) in iter {
                     rows_data.push(doc);
                 }
-                
+
                 if rows_data.is_empty() {
-                     let fields = Arc::new(vec![]);
-                     let schema = Response::Query(QueryResponse::new(fields, stream::iter(vec![])));
-                     return Ok(vec![schema]);
+                    let fields = Arc::new(vec![]);
+                    let schema = Response::Query(QueryResponse::new(fields, stream::iter(vec![])));
+                    return Ok(vec![schema]);
                 }
 
                 let first = &rows_data[0];
                 let obj = first.as_object().unwrap();
-                let fields: Vec<FieldInfo> = obj.keys().map(|k| {
-                    FieldInfo::new(k.clone().into(), None, None, Type::JSON, FieldFormat::Text)
-                }).collect();
+                let fields: Vec<FieldInfo> = obj
+                    .keys()
+                    .map(|k| {
+                        FieldInfo::new(k.clone().into(), None, None, Type::JSON, FieldFormat::Text)
+                    })
+                    .collect();
                 let fields = Arc::new(fields);
-                
+
                 let mut data_rows: Vec<PgWireResult<DataRow>> = Vec::new();
                 for doc in rows_data {
                     let mut encoder = DataRowEncoder::new(fields.clone());
@@ -85,13 +102,17 @@ impl SimpleQueryHandler for ArgusHandler {
                     for field in fields.iter() {
                         let key = field.name();
                         let val = obj.get(key).unwrap_or(&serde_json::Value::Null);
-                        encoder.encode_field(&val.to_string()).map_err(|e| PgWireError::ApiError(Box::new(e)))?; 
+                        encoder
+                            .encode_field(&val.to_string())
+                            .map_err(|e| PgWireError::ApiError(Box::new(e)))?;
                     }
                     data_rows.push(Ok(encoder.take_row()));
                 }
-                
+
                 let row_stream = stream::iter(data_rows);
-                Ok(vec![Response::Query(QueryResponse::new(fields, row_stream))])
+                Ok(vec![Response::Query(QueryResponse::new(
+                    fields, row_stream,
+                ))])
             }
         }
     }
@@ -134,8 +155,9 @@ async fn main() {
         let processor = processor.clone();
 
         tokio::spawn(async move {
-            process_socket(socket, None, processor).await.expect("Failed to process socket");
+            process_socket(socket, None, processor)
+                .await
+                .expect("Failed to process socket");
         });
     }
 }
-

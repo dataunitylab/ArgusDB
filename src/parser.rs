@@ -1,8 +1,10 @@
-use crate::query::{Expression, BinaryOperator, LogicalOperator, LogicalPlan, Statement};
+use crate::query::{BinaryOperator, Expression, LogicalOperator, LogicalPlan, Statement};
 use serde_json::Value;
+use sqlparser::ast::{
+    self, BinaryOperator as SqlBinaryOperator, Expr, LimitClause, SetExpr, TableFactor, Values,
+};
 use sqlparser::dialect::Dialect;
 use sqlparser::parser::Parser;
-use sqlparser::ast::{self, SetExpr, TableFactor, BinaryOperator as SqlBinaryOperator, Expr, LimitClause, Values};
 
 #[derive(Debug)]
 struct ArgusDialect;
@@ -27,7 +29,7 @@ impl Dialect for ArgusDialect {
 
 pub fn parse(sql: &str) -> Result<Statement, String> {
     let dialect = ArgusDialect {};
-    
+
     let ast = Parser::parse_sql(&dialect, sql).map_err(|e| e.to_string())?;
 
     if ast.len() != 1 {
@@ -38,7 +40,10 @@ pub fn parse(sql: &str) -> Result<Statement, String> {
         ast::Statement::Insert(insert) => {
             let collection = insert.table.to_string();
             let documents = convert_insert_source(&insert.source)?;
-            Ok(Statement::Insert { collection, documents })
+            Ok(Statement::Insert {
+                collection,
+                documents,
+            })
         }
         ast::Statement::Query(query) => {
             let logical_plan = convert_query(query)?;
@@ -50,7 +55,7 @@ pub fn parse(sql: &str) -> Result<Statement, String> {
 
 fn convert_insert_source(source: &Option<Box<ast::Query>>) -> Result<Vec<Value>, String> {
     let query = source.as_ref().ok_or("Insert must have a source")?;
-    
+
     match &*query.body {
         SetExpr::Values(Values { rows, .. }) => {
             let mut docs = Vec::new();
@@ -62,7 +67,8 @@ fn convert_insert_source(source: &Option<Box<ast::Query>>) -> Result<Vec<Value>,
                 match expr {
                     Expr::Identifier(ident) => {
                         let json_str = &ident.value;
-                        let value: Value = serde_json::from_str(json_str).map_err(|e| format!("Invalid JSON in INSERT: {}", e))?;
+                        let value: Value = serde_json::from_str(json_str)
+                            .map_err(|e| format!("Invalid JSON in INSERT: {}", e))?;
                         docs.push(value);
                     }
                     _ => return Err("Expected a JSON object enclosed in backticks".to_string()),
@@ -79,17 +85,17 @@ fn convert_query(query: &ast::Query) -> Result<LogicalPlan, String> {
     let mut offset_val = None;
 
     if let Some(limit_clause) = &query.limit_clause {
-         match limit_clause {
-             LimitClause::LimitOffset { limit, offset, .. } => {
-                 if let Some(l) = limit {
-                     limit_val = Some(parse_limit_expr(l)?);
-                 }
-                 if let Some(o) = offset {
-                     offset_val = Some(parse_limit_expr(&o.value)?);
-                 }
-             }
-             _ => {}
-         }
+        match limit_clause {
+            LimitClause::LimitOffset { limit, offset, .. } => {
+                if let Some(l) = limit {
+                    limit_val = Some(parse_limit_expr(l)?);
+                }
+                if let Some(o) = offset {
+                    offset_val = Some(parse_limit_expr(&o.value)?);
+                }
+            }
+            _ => {}
+        }
     }
 
     // Body (SetExpr)
@@ -100,13 +106,19 @@ fn convert_query(query: &ast::Query) -> Result<LogicalPlan, String> {
 
     // Wrap with Limit/Offset
     let plan = if let Some(o) = offset_val {
-        LogicalPlan::Offset { input: Box::new(plan), offset: o }
+        LogicalPlan::Offset {
+            input: Box::new(plan),
+            offset: o,
+        }
     } else {
         plan
     };
 
     let plan = if let Some(l) = limit_val {
-        LogicalPlan::Limit { input: Box::new(plan), limit: l }
+        LogicalPlan::Limit {
+            input: Box::new(plan),
+            limit: l,
+        }
     } else {
         plan
     };
@@ -117,8 +129,10 @@ fn convert_query(query: &ast::Query) -> Result<LogicalPlan, String> {
 fn parse_limit_expr(expr: &Expr) -> Result<usize, String> {
     match expr {
         Expr::Value(val_span) => match &val_span.value {
-             ast::Value::Number(n, _) => n.parse::<usize>().map_err(|_| "Invalid number".to_string()),
-             _ => Err("Expected number".to_string()),
+            ast::Value::Number(n, _) => {
+                n.parse::<usize>().map_err(|_| "Invalid number".to_string())
+            }
+            _ => Err("Expected number".to_string()),
         },
         _ => Err("Expected value for limit/offset".to_string()),
     }
@@ -134,7 +148,7 @@ fn convert_select(select: &ast::Select) -> Result<LogicalPlan, String> {
         TableFactor::Table { name, .. } => name.to_string(),
         _ => return Err("Unsupported FROM clause".to_string()),
     };
-    
+
     let mut plan = LogicalPlan::Scan { collection };
 
     // 2. WHERE (Filter)
@@ -162,7 +176,7 @@ fn convert_select(select: &ast::Select) -> Result<LogicalPlan, String> {
             _ => return Err("Unsupported projection item".to_string()),
         }
     }
-    
+
     plan = LogicalPlan::Project {
         input: Box::new(plan),
         projections,
@@ -180,9 +194,13 @@ fn convert_expr(expr: &Expr) -> Result<Expression, String> {
             } else {
                 Ok(Expression::FieldReference(value))
             }
-        },
+        }
         Expr::CompoundIdentifier(idents) => {
-            let path = idents.iter().map(|i| i.value.clone()).collect::<Vec<_>>().join(".");
+            let path = idents
+                .iter()
+                .map(|i| i.value.clone())
+                .collect::<Vec<_>>()
+                .join(".");
             if path.starts_with('$') {
                 Ok(Expression::JsonPath(path))
             } else {
@@ -195,7 +213,9 @@ fn convert_expr(expr: &Expr) -> Result<Expression, String> {
                 if let Ok(i) = n.parse::<i64>() {
                     Ok(Expression::Literal(serde_json::Value::Number(i.into())))
                 } else if let Ok(f) = n.parse::<f64>() {
-                    Ok(Expression::Literal(serde_json::Value::Number(serde_json::Number::from_f64(f).ok_or("Invalid float")?)))
+                    Ok(Expression::Literal(serde_json::Value::Number(
+                        serde_json::Number::from_f64(f).ok_or("Invalid float")?,
+                    )))
                 } else {
                     Err("Invalid number".to_string())
                 }
@@ -208,7 +228,7 @@ fn convert_expr(expr: &Expr) -> Result<Expression, String> {
         Expr::BinaryOp { left, op, right } => {
             let left_expr = Box::new(convert_expr(left)?);
             let right_expr = Box::new(convert_expr(right)?);
-            
+
             let (is_logical, b_op, l_op) = match op {
                 SqlBinaryOperator::Eq => (false, Some(BinaryOperator::Eq), None),
                 SqlBinaryOperator::NotEq => (false, Some(BinaryOperator::Neq), None),
@@ -220,7 +240,7 @@ fn convert_expr(expr: &Expr) -> Result<Expression, String> {
                 SqlBinaryOperator::Or => (true, None, Some(LogicalOperator::Or)),
                 _ => return Err(format!("Unsupported binary operator: {:?}", op)),
             };
-            
+
             if is_logical {
                 Ok(Expression::Logical {
                     left: left_expr,
@@ -228,13 +248,13 @@ fn convert_expr(expr: &Expr) -> Result<Expression, String> {
                     right: right_expr,
                 })
             } else {
-                 Ok(Expression::Binary {
+                Ok(Expression::Binary {
                     left: left_expr,
                     op: b_op.unwrap(),
                     right: right_expr,
                 })
             }
-        },
+        }
         Expr::JsonAccess { .. } => Err("JsonAccess not implemented".to_string()),
         _ => Err(format!("Unsupported expression: {:?}", expr)),
     }
@@ -266,7 +286,10 @@ mod tests {
         let sql = r#"INSERT INTO users VALUES `{"name": "Alice", "age": 30}`, `{"name": "Bob"}`"#;
         let stmt = parse(sql).unwrap();
         match stmt {
-            Statement::Insert { collection, documents } => {
+            Statement::Insert {
+                collection,
+                documents,
+            } => {
                 assert_eq!(collection, "users");
                 assert_eq!(documents.len(), 2);
                 assert_eq!(documents[0]["name"], "Alice");
@@ -293,14 +316,15 @@ mod tests {
                                     LogicalPlan::Project { input, projections } => {
                                         assert_eq!(projections.len(), 2);
                                         match *input {
-                                            LogicalPlan::Filter { input, predicate: _ } => {
-                                                match *input {
-                                                    LogicalPlan::Scan { collection } => {
-                                                        assert_eq!(collection, "users");
-                                                    }
-                                                    _ => panic!("Expected Scan"),
+                                            LogicalPlan::Filter {
+                                                input,
+                                                predicate: _,
+                                            } => match *input {
+                                                LogicalPlan::Scan { collection } => {
+                                                    assert_eq!(collection, "users");
                                                 }
-                                            }
+                                                _ => panic!("Expected Scan"),
+                                            },
                                             _ => panic!("Expected Filter"),
                                         }
                                     }
@@ -323,12 +347,10 @@ mod tests {
         let sql = "SELECT $.a.b FROM t";
         let stmt = parse(sql).unwrap();
         match stmt {
-            Statement::Select(LogicalPlan::Project { projections, .. }) => {
-                match &projections[0] {
-                    Expression::JsonPath(p) => assert_eq!(p, "$.a.b"),
-                    _ => panic!("Expected JsonPath"),
-                }
-            }
+            Statement::Select(LogicalPlan::Project { projections, .. }) => match &projections[0] {
+                Expression::JsonPath(p) => assert_eq!(p, "$.a.b"),
+                _ => panic!("Expected JsonPath"),
+            },
             _ => panic!("Expected Select Project"),
         }
 
@@ -336,12 +358,10 @@ mod tests {
         let sql = "SELECT `$.a[0]` FROM t";
         let stmt = parse(sql).unwrap();
         match stmt {
-            Statement::Select(LogicalPlan::Project { projections, .. }) => {
-                match &projections[0] {
-                    Expression::JsonPath(p) => assert_eq!(p, "$.a[0]"),
-                    _ => panic!("Expected JsonPath"),
-                }
-            }
+            Statement::Select(LogicalPlan::Project { projections, .. }) => match &projections[0] {
+                Expression::JsonPath(p) => assert_eq!(p, "$.a[0]"),
+                _ => panic!("Expected JsonPath"),
+            },
             _ => panic!("Expected Select Project"),
         }
     }

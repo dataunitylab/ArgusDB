@@ -195,15 +195,36 @@ mod tests {
         assert_eq!(props.get("a").unwrap().types, vec![SchemaType::Integer]);
         assert_eq!(props.get("b").unwrap().types, vec![SchemaType::String]);
     }
-    
+
     #[test]
     fn test_schema_type_variants() {
-        assert_eq!(serde_json::to_string(&SchemaType::String).unwrap(), r#""string""#);
-        assert_eq!(serde_json::to_string(&SchemaType::Integer).unwrap(), r#""integer""#);
-        assert_eq!(serde_json::to_string(&SchemaType::Number).unwrap(), r#""number""#);
-        assert_eq!(serde_json::to_string(&SchemaType::Boolean).unwrap(), r#""boolean""#);
-        assert_eq!(serde_json::to_string(&SchemaType::Null).unwrap(), r#""null""#);
-        assert_eq!(serde_json::to_string(&SchemaType::Object).unwrap(), r#""object""#);
-        assert_eq!(serde_json::to_string(&SchemaType::Array).unwrap(), r#""array""#);
+        assert_eq!(
+            serde_json::to_string(&SchemaType::String).unwrap(),
+            r#""string""#
+        );
+        assert_eq!(
+            serde_json::to_string(&SchemaType::Integer).unwrap(),
+            r#""integer""#
+        );
+        assert_eq!(
+            serde_json::to_string(&SchemaType::Number).unwrap(),
+            r#""number""#
+        );
+        assert_eq!(
+            serde_json::to_string(&SchemaType::Boolean).unwrap(),
+            r#""boolean""#
+        );
+        assert_eq!(
+            serde_json::to_string(&SchemaType::Null).unwrap(),
+            r#""null""#
+        );
+        assert_eq!(
+            serde_json::to_string(&SchemaType::Object).unwrap(),
+            r#""object""#
+        );
+        assert_eq!(
+            serde_json::to_string(&SchemaType::Array).unwrap(),
+            r#""array""#
+        );
     }
 }

@@ -1,8 +1,8 @@
+use crate::db::DB;
+use jsonpath_rust::JsonPath;
 use serde_json::Value;
 use std::cmp::Ordering;
 use std::str::FromStr;
-use jsonpath_rust::JsonPath;
-use crate::db::DB;
 
 #[derive(Debug, Clone)]
 pub enum Expression {
@@ -23,26 +23,49 @@ pub enum Expression {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum BinaryOperator {
-    Eq, Neq, Lt, Lte, Gt, Gte
+    Eq,
+    Neq,
+    Lt,
+    Lte,
+    Gt,
+    Gte,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum LogicalOperator {
-    And, Or
+    And,
+    Or,
 }
 
 #[derive(Debug)]
 pub enum LogicalPlan {
-    Scan { collection: String },
-    Filter { input: Box<LogicalPlan>, predicate: Expression },
-    Project { input: Box<LogicalPlan>, projections: Vec<Expression> },
-    Limit { input: Box<LogicalPlan>, limit: usize },
-    Offset { input: Box<LogicalPlan>, offset: usize },
+    Scan {
+        collection: String,
+    },
+    Filter {
+        input: Box<LogicalPlan>,
+        predicate: Expression,
+    },
+    Project {
+        input: Box<LogicalPlan>,
+        projections: Vec<Expression>,
+    },
+    Limit {
+        input: Box<LogicalPlan>,
+        limit: usize,
+    },
+    Offset {
+        input: Box<LogicalPlan>,
+        offset: usize,
+    },
 }
 
 #[derive(Debug)]
 pub enum Statement {
-    Insert { collection: String, documents: Vec<Value> },
+    Insert {
+        collection: String,
+        documents: Vec<Value>,
+    },
     Select(LogicalPlan),
 }
 
@@ -71,7 +94,10 @@ pub struct FilterOperator<'a> {
 }
 
 impl<'a> FilterOperator<'a> {
-    pub fn new(child: Box<dyn Iterator<Item = (String, Value)> + 'a>, predicate: Expression) -> Self {
+    pub fn new(
+        child: Box<dyn Iterator<Item = (String, Value)> + 'a>,
+        predicate: Expression,
+    ) -> Self {
         FilterOperator { child, predicate }
     }
 }
@@ -90,11 +116,14 @@ impl<'a> Iterator for FilterOperator<'a> {
 
 pub struct ProjectOperator<'a> {
     child: Box<dyn Iterator<Item = (String, Value)> + 'a>,
-    projections: Vec<Expression>, 
+    projections: Vec<Expression>,
 }
 
 impl<'a> ProjectOperator<'a> {
-    pub fn new(child: Box<dyn Iterator<Item = (String, Value)> + 'a>, projections: Vec<Expression>) -> Self {
+    pub fn new(
+        child: Box<dyn Iterator<Item = (String, Value)> + 'a>,
+        projections: Vec<Expression>,
+    ) -> Self {
         ProjectOperator { child, projections }
     }
 }
@@ -114,7 +143,7 @@ impl<'a> Iterator for ProjectOperator<'a> {
                         new_doc.insert(path.clone(), value);
                     }
                     _ => {
-                         // Fallback/TODO: Handle computed columns alias
+                        // Fallback/TODO: Handle computed columns alias
                     }
                 }
             }
@@ -132,7 +161,11 @@ pub struct LimitOperator<'a> {
 
 impl<'a> LimitOperator<'a> {
     pub fn new(child: Box<dyn Iterator<Item = (String, Value)> + 'a>, limit: usize) -> Self {
-        LimitOperator { child, limit, count: 0 }
+        LimitOperator {
+            child,
+            limit,
+            count: 0,
+        }
     }
 }
 
@@ -158,7 +191,11 @@ pub struct OffsetOperator<'a> {
 
 impl<'a> OffsetOperator<'a> {
     pub fn new(child: Box<dyn Iterator<Item = (String, Value)> + 'a>, offset: usize) -> Self {
-        OffsetOperator { child, offset, skipped: 0 }
+        OffsetOperator {
+            child,
+            offset,
+            skipped: 0,
+        }
     }
 }
 
@@ -179,9 +216,7 @@ impl<'a> Iterator for OffsetOperator<'a> {
 
 fn evaluate_expression(expr: &Expression, doc: &Value) -> Value {
     match expr {
-        Expression::FieldReference(path) => {
-            get_path(doc, path).unwrap_or(Value::Null)
-        }
+        Expression::FieldReference(path) => get_path(doc, path).unwrap_or(Value::Null),
         Expression::JsonPath(path) => {
             if let Ok(p) = JsonPath::from_str(path) {
                 let inst = p.find(doc);
@@ -197,7 +232,7 @@ fn evaluate_expression(expr: &Expression, doc: &Value) -> Value {
                     inst
                 }
             } else {
-                Value::Null 
+                Value::Null
             }
         }
         Expression::Literal(val) => val.clone(),
@@ -232,10 +267,18 @@ fn evaluate_binary(left: &Value, op: &BinaryOperator, right: &Value) -> Value {
     match op {
         BinaryOperator::Eq => Value::Bool(left == right),
         BinaryOperator::Neq => Value::Bool(left != right),
-        BinaryOperator::Lt => compare_values(left, right).map(|o| Value::Bool(o == Ordering::Less)).unwrap_or(Value::Bool(false)),
-        BinaryOperator::Lte => compare_values(left, right).map(|o| Value::Bool(o != Ordering::Greater)).unwrap_or(Value::Bool(false)),
-        BinaryOperator::Gt => compare_values(left, right).map(|o| Value::Bool(o == Ordering::Greater)).unwrap_or(Value::Bool(false)),
-        BinaryOperator::Gte => compare_values(left, right).map(|o| Value::Bool(o != Ordering::Less)).unwrap_or(Value::Bool(false)),
+        BinaryOperator::Lt => compare_values(left, right)
+            .map(|o| Value::Bool(o == Ordering::Less))
+            .unwrap_or(Value::Bool(false)),
+        BinaryOperator::Lte => compare_values(left, right)
+            .map(|o| Value::Bool(o != Ordering::Greater))
+            .unwrap_or(Value::Bool(false)),
+        BinaryOperator::Gt => compare_values(left, right)
+            .map(|o| Value::Bool(o == Ordering::Greater))
+            .unwrap_or(Value::Bool(false)),
+        BinaryOperator::Gte => compare_values(left, right)
+            .map(|o| Value::Bool(o != Ordering::Less))
+            .unwrap_or(Value::Bool(false)),
     }
 }
 
@@ -256,9 +299,9 @@ fn compare_values(left: &Value, right: &Value) -> Option<Ordering> {
             } else if n1.is_f64() && n2.is_f64() {
                 n1.as_f64().unwrap().partial_cmp(&n2.as_f64().unwrap())
             } else {
-                 let f1 = n1.as_f64()?;
-                 let f2 = n2.as_f64()?;
-                 f1.partial_cmp(&f2)
+                let f1 = n1.as_f64()?;
+                let f2 = n2.as_f64()?;
+                f1.partial_cmp(&f2)
             }
         }
         (Value::String(s1), Value::String(s2)) => Some(s1.cmp(s2)),
@@ -267,7 +310,10 @@ fn compare_values(left: &Value, right: &Value) -> Option<Ordering> {
     }
 }
 
-pub fn execute_plan<'a>(plan: LogicalPlan, db: &'a DB) -> Box<dyn Iterator<Item = (String, Value)> + 'a> {
+pub fn execute_plan<'a>(
+    plan: LogicalPlan,
+    db: &'a DB,
+) -> Box<dyn Iterator<Item = (String, Value)> + 'a> {
     match plan {
         LogicalPlan::Scan { .. } => {
             let iter = db.scan();
@@ -299,7 +345,7 @@ mod tests {
 
     // Helper to create a mock source
     // Since we now use standard Iterator, we can just use vec::IntoIter
-    
+
     #[test]
     fn test_scan() {
         let data = vec![
@@ -308,7 +354,7 @@ mod tests {
         ];
         let source_iter = Box::new(data.into_iter());
         let mut scan = ScanOperator::new(source_iter);
-        
+
         assert_eq!(scan.next().unwrap().0, "1");
         assert_eq!(scan.next().unwrap().0, "2");
         assert!(scan.next().is_none());
@@ -322,7 +368,7 @@ mod tests {
             ("3".to_string(), json!({"a": 3, "b": "yes"})),
         ];
         let source = Box::new(data.into_iter());
-        
+
         let predicate = Expression::Logical {
             left: Box::new(Expression::Binary {
                 left: Box::new(Expression::FieldReference("a".to_string())),
@@ -338,7 +384,7 @@ mod tests {
         };
 
         let mut filter = FilterOperator::new(source, predicate);
-        
+
         let (id, _) = filter.next().unwrap();
         assert_eq!(id, "3");
         assert!(filter.next().is_none());
@@ -360,7 +406,7 @@ mod tests {
         };
 
         let mut filter = FilterOperator::new(source, predicate);
-        
+
         let (id, _) = filter.next().unwrap();
         assert_eq!(id, "2");
         assert!(filter.next().is_none());
@@ -368,18 +414,16 @@ mod tests {
 
     #[test]
     fn test_project() {
-        let data = vec![
-            ("1".to_string(), json!({"a": 1, "b": 2, "c": 3})),
-        ];
+        let data = vec![("1".to_string(), json!({"a": 1, "b": 2, "c": 3}))];
         let source = Box::new(data.into_iter());
-        
+
         let projections = vec![
             Expression::FieldReference("a".to_string()),
             Expression::FieldReference("c".to_string()),
         ];
-        
+
         let mut project = ProjectOperator::new(source, projections);
-        
+
         let (_, doc) = project.next().unwrap();
         let obj = doc.as_object().unwrap();
         assert_eq!(obj.len(), 2);
@@ -397,10 +441,10 @@ mod tests {
             ("4".to_string(), json!({"a": 4})),
         ];
         let source = Box::new(data.into_iter());
-        
+
         let offset_op = Box::new(OffsetOperator::new(source, 1));
         let mut limit_op = LimitOperator::new(offset_op, 2);
-        
+
         assert_eq!(limit_op.next().unwrap().0, "2");
         assert_eq!(limit_op.next().unwrap().0, "3");
         assert!(limit_op.next().is_none());
