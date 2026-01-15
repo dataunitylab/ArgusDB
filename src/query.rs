@@ -1,9 +1,12 @@
 use serde_json::Value;
 use std::cmp::Ordering;
+use std::str::FromStr;
+use jsonpath_rust::JsonPath;
 
 #[derive(Debug, Clone)]
 pub enum Expression {
     FieldReference(String), // dot notation e.g. "a.b"
+    JsonPath(String),       // JSONPath e.g. "$.a.b"
     Literal(Value),
     Binary {
         left: Box<Expression>,
@@ -17,14 +20,29 @@ pub enum Expression {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum BinaryOperator {
     Eq, Neq, Lt, Lte, Gt, Gte
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum LogicalOperator {
     And, Or
+}
+
+#[derive(Debug)]
+pub enum LogicalPlan {
+    Scan { collection: String },
+    Filter { input: Box<LogicalPlan>, predicate: Expression },
+    Project { input: Box<LogicalPlan>, projections: Vec<Expression> },
+    Limit { input: Box<LogicalPlan>, limit: usize },
+    Offset { input: Box<LogicalPlan>, offset: usize },
+}
+
+#[derive(Debug)]
+pub enum Statement {
+    Insert { collection: String, documents: Vec<Value> },
+    Select(LogicalPlan),
 }
 
 pub trait QueryOperator {
@@ -98,6 +116,9 @@ impl QueryOperator for ProjectOperator {
                     Expression::FieldReference(path) => {
                         new_doc.insert(path.clone(), value);
                     }
+                    Expression::JsonPath(path) => {
+                        new_doc.insert(path.clone(), value);
+                    }
                     _ => {
                          // Fallback/TODO: Handle computed columns alias
                     }
@@ -164,6 +185,24 @@ fn evaluate_expression(expr: &Expression, doc: &Value) -> Value {
     match expr {
         Expression::FieldReference(path) => {
             get_path(doc, path).unwrap_or(Value::Null)
+        }
+        Expression::JsonPath(path) => {
+            if let Ok(p) = JsonPath::from_str(path) {
+                let inst = p.find(doc);
+                if let Some(arr) = inst.as_array() {
+                    if arr.is_empty() {
+                        Value::Null
+                    } else if arr.len() == 1 {
+                        arr[0].clone()
+                    } else {
+                        inst.clone()
+                    }
+                } else {
+                    inst
+                }
+            } else {
+                Value::Null 
+            }
         }
         Expression::Literal(val) => val.clone(),
         Expression::Binary { left, op, right } => {
@@ -295,6 +334,28 @@ mod tests {
         
         let (id, _) = filter.next().unwrap();
         assert_eq!(id, "3");
+        assert!(filter.next().is_none());
+    }
+
+    #[test]
+    fn test_jsonpath() {
+        let data = vec![
+            ("1".to_string(), json!({"a": {"b": 10}})),
+            ("2".to_string(), json!({"a": {"b": 20}})),
+        ];
+        let source = Box::new(MockSource::new(data));
+
+        // Filter: $.a.b > 15
+        let predicate = Expression::Binary {
+            left: Box::new(Expression::JsonPath("$.a.b".to_string())),
+            op: BinaryOperator::Gt,
+            right: Box::new(Expression::Literal(json!(15))),
+        };
+
+        let mut filter = FilterOperator::new(source, predicate);
+        
+        let (id, _) = filter.next().unwrap();
+        assert_eq!(id, "2");
         assert!(filter.next().is_none());
     }
 
