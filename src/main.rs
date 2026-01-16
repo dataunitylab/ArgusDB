@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use config::{Config, Environment};
+use config::{Config, Environment, File};
 use serde::Deserialize;
 use futures::stream;
 use pgwire::api::Type;
@@ -161,6 +161,7 @@ impl PgWireServerHandlers for ArgusProcessor {
 #[tokio::main]
 async fn main() {
     let settings = Config::builder()
+        .add_source(File::with_name("argusdb").required(false))
         .add_source(Environment::with_prefix("ARGUS"))
         .build()
         .unwrap()
