@@ -15,10 +15,27 @@ fn sanitize_filename(name: &str) -> String {
         if c.is_ascii_alphanumeric() {
             result.push(c);
         } else {
-            result.push_str(&format!("_{:x}", c as u32));
+            result.push_str(&format!("_{:02x}", c as u32));
         }
     }
     result
+}
+
+fn unsanitize_filename(name: &str) -> Option<String> {
+    let mut result = String::new();
+    let mut chars = name.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '_' {
+            let h1 = chars.next()?;
+            let h2 = chars.next()?;
+            let hex = format!("{}{}", h1, h2);
+            let code = u32::from_str_radix(&hex, 16).ok()?;
+            result.push(char::from_u32(code)?);
+        } else {
+            result.push(c);
+        }
+    }
+    Some(result)
 }
 
 struct Collection {
@@ -241,9 +258,28 @@ impl<'a> Iterator for MergedIterator<'a> {
 impl DB {
     pub fn new(root_dir: &str, memtable_threshold: usize, jstable_threshold: u64) -> Self {
         fs::create_dir_all(root_dir).unwrap();
+        let mut collections = HashMap::new();
+
+        if let Ok(entries) = fs::read_dir(root_dir) {
+            for entry in entries {
+                if let Ok(entry) = entry {
+                    if entry.path().is_dir() {
+                        if let Some(dir_name) = entry.file_name().to_str() {
+                            if let Some(col_name) = unsanitize_filename(dir_name) {
+                                let col_dir = entry.path();
+                                let collection =
+                                    Collection::new(col_dir, memtable_threshold, jstable_threshold);
+                                collections.insert(col_name, collection);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         DB {
             root_dir: PathBuf::from(root_dir),
-            collections: HashMap::new(),
+            collections,
             memtable_threshold,
             jstable_threshold,
         }
