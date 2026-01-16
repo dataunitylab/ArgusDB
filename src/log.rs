@@ -5,6 +5,8 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use tracing::{Level, span};
+
 #[derive(Serialize, Deserialize, Debug)]
 pub enum Operation {
     Insert { id: String, doc: Value },
@@ -36,6 +38,9 @@ impl Logger {
     }
 
     pub fn log(&mut self, op: Operation) -> std::io::Result<()> {
+        let span = span!(Level::DEBUG, "log", op = ?op);
+        let _enter = span.enter();
+
         if self.file.metadata()?.len() > self.rotation_threshold {
             self.rotate()?;
         }

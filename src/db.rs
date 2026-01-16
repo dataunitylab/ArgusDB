@@ -3,6 +3,7 @@ use crate::log::{LogEntry, Logger, Operation};
 use crate::storage::MemTable;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::fmt::Debug;
 use std::fs;
 use std::iter::Peekable;
 use std::path::PathBuf;
@@ -73,6 +74,7 @@ impl Collection {
         }
     }
 
+    #[tracing::instrument]
     fn insert(&mut self, doc: Value) -> String {
         if self.memtable.len() >= self.memtable_threshold {
             self.flush();
@@ -88,6 +90,7 @@ impl Collection {
         id
     }
 
+    #[tracing::instrument]
     fn delete(&mut self, id: &str) {
         self.logger
             .log(Operation::Delete { id: id.to_string() })
@@ -95,6 +98,7 @@ impl Collection {
         self.memtable.delete(id);
     }
 
+    #[tracing::instrument]
     fn update(&mut self, id: &str, doc: Value) {
         self.logger
             .log(Operation::Update {
@@ -159,6 +163,14 @@ impl Collection {
         }
 
         MergedIterator { sources }
+    }
+}
+
+impl Debug for Collection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Collection")
+            .field("dir", &self.dir)
+            .finish()
     }
 }
 

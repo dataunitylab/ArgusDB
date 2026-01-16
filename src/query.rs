@@ -4,6 +4,8 @@ use serde_json::Value;
 use std::cmp::Ordering;
 use std::str::FromStr;
 
+use tracing::{Level, span};
+
 #[derive(Debug, Clone)]
 pub enum Expression {
     FieldReference(String), // dot notation e.g. "a.b"
@@ -312,6 +314,9 @@ pub fn execute_plan<'a>(
     plan: LogicalPlan,
     db: &'a DB,
 ) -> Box<dyn Iterator<Item = (String, Value)> + 'a> {
+    let span = span!(Level::DEBUG, "plan", plan = ?plan);
+    let _enter = span.enter();
+
     match plan {
         LogicalPlan::Scan { collection } => {
             let iter = db.scan(&collection);

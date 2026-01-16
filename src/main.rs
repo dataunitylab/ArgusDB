@@ -14,6 +14,8 @@ use serde::Deserialize;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
+use tracing::{Level, info, span};
+use tracing_subscriber;
 
 pub mod db;
 pub mod jstable;
@@ -94,7 +96,8 @@ impl SimpleQueryHandler for ArgusHandler {
     where
         C: ClientInfo + Unpin + Send + Sync,
     {
-        println!("Received query: {}", query);
+        let span = span!(Level::DEBUG, "query", query);
+        let _enter = span.enter();
 
         let stmt = match argus_parser::parse(query) {
             Ok(s) => s,
@@ -209,6 +212,10 @@ async fn main() {
         builder = builder.set_override("port", port).unwrap();
     }
 
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(Level::TRACE)
+        .finish();
+    tracing::subscriber::set_global_default(subscriber).unwrap();
     let settings: Settings = builder.build().unwrap().try_deserialize().unwrap();
 
     let db = Arc::new(Mutex::new(DB::new(
@@ -221,7 +228,7 @@ async fn main() {
 
     let server_addr = format!("{}:{}", settings.host, settings.port);
     let listener = TcpListener::bind(&server_addr).await.unwrap();
-    println!("ArgusDB server listening on {}", server_addr);
+    info!("ArgusDB server listening on {}", server_addr);
 
     loop {
         let (socket, _) = listener.accept().await.unwrap();
