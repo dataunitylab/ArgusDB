@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use clap::Parser;
 use config::{Config, Environment, File};
 use serde::Deserialize;
 use futures::stream;
@@ -25,6 +26,23 @@ pub mod storage;
 use crate::db::DB;
 use crate::parser as argus_parser;
 use crate::query::{Statement, execute_plan};
+
+/// ArgusDB Server
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None, disable_help_flag = true)]
+struct Args {
+    /// Host to bind to
+    #[arg(short = 'h', long)]
+    host: Option<String>,
+
+    /// Port to bind to
+    #[arg(short, long)]
+    port: Option<u16>,
+
+    /// Print help
+    #[arg(long, action = clap::ArgAction::Help)]
+    help: Option<bool>,
+}
 
 #[derive(Debug, Deserialize)]
 struct Settings {
@@ -160,13 +178,20 @@ impl PgWireServerHandlers for ArgusProcessor {
 
 #[tokio::main]
 async fn main() {
-    let settings = Config::builder()
+    let args = Args::parse();
+
+    let mut builder = Config::builder()
         .add_source(File::with_name("argusdb").required(false))
-        .add_source(Environment::with_prefix("ARGUS"))
-        .build()
-        .unwrap()
-        .try_deserialize::<Settings>()
-        .unwrap();
+        .add_source(Environment::with_prefix("ARGUS"));
+
+    if let Some(host) = args.host {
+        builder = builder.set_override("host", host).unwrap();
+    }
+    if let Some(port) = args.port {
+        builder = builder.set_override("port", port).unwrap();
+    }
+
+    let settings: Settings = builder.build().unwrap().try_deserialize().unwrap();
 
     let db = Arc::new(Mutex::new(DB::new("argus_data")));
     let handler = Arc::new(ArgusHandler::new(db));
