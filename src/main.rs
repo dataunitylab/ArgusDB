@@ -113,12 +113,12 @@ impl SimpleQueryHandler for ArgusHandler {
 
         match stmt {
             Statement::Insert {
-                collection: _,
+                collection,
                 documents,
             } => {
                 let count = documents.len();
                 for doc in documents {
-                    db.insert(doc);
+                    db.insert(&collection, doc);
                 }
                 Ok(vec![Response::Execution(Tag::new(&format!(
                     "INSERT 0 {}",

@@ -5,7 +5,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
 use std::iter::Peekable;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use uuid::Uuid;
 
 fn sanitize_filename(name: &str) -> String {
@@ -257,8 +257,12 @@ impl DB {
         self.get_collection(collection).update(id, doc);
     }
 
-    pub fn scan(&mut self, collection: &str) -> impl Iterator<Item = (String, Value)> + '_ {
-        self.get_collection(collection).scan()
+    pub fn scan(&self, collection: &str) -> Box<dyn Iterator<Item = (String, Value)> + '_> {
+        if let Some(col) = self.collections.get(collection) {
+            Box::new(col.scan())
+        } else {
+            Box::new(std::iter::empty())
+        }
     }
 }
 

@@ -313,9 +313,9 @@ pub fn execute_plan<'a>(
     db: &'a DB,
 ) -> Box<dyn Iterator<Item = (String, Value)> + 'a> {
     match plan {
-        LogicalPlan::Scan { .. } => {
-            let iter = db.scan();
-            Box::new(ScanOperator::new(Box::new(iter)))
+        LogicalPlan::Scan { collection } => {
+            let iter = db.scan(&collection);
+            Box::new(ScanOperator::new(iter))
         }
         LogicalPlan::Filter { input, predicate } => {
             let child = execute_plan(*input, db);
