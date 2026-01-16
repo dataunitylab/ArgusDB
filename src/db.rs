@@ -56,7 +56,7 @@ impl Collection {
                 }
             }
         }
-        
+
         // Count existing JSTables
         let mut jstable_count = 0;
         while dir.join(format!("jstable-{}", jstable_count)).exists() {
@@ -274,7 +274,11 @@ mod tests {
     #[test]
     fn test_db_flush() {
         let dir = tempdir().unwrap();
-        let mut db = DB::new(dir.path().to_str().unwrap(), MEMTABLE_THRESHOLD, JSTABLE_THRESHOLD);
+        let mut db = DB::new(
+            dir.path().to_str().unwrap(),
+            MEMTABLE_THRESHOLD,
+            JSTABLE_THRESHOLD,
+        );
 
         for i in 0..MEMTABLE_THRESHOLD {
             db.insert("test", json!({ "a": i }));
@@ -297,7 +301,11 @@ mod tests {
     #[test]
     fn test_log_content() {
         let dir = tempdir().unwrap();
-        let mut db = DB::new(dir.path().to_str().unwrap(), MEMTABLE_THRESHOLD, JSTABLE_THRESHOLD);
+        let mut db = DB::new(
+            dir.path().to_str().unwrap(),
+            MEMTABLE_THRESHOLD,
+            JSTABLE_THRESHOLD,
+        );
         let doc1 = json!({"a": 1});
         let id1 = db.insert("test", doc1.clone());
 
@@ -339,7 +347,11 @@ mod tests {
     #[test]
     fn test_db_recover() {
         let dir = tempdir().unwrap();
-        let mut db = DB::new(dir.path().to_str().unwrap(), MEMTABLE_THRESHOLD, JSTABLE_THRESHOLD);
+        let mut db = DB::new(
+            dir.path().to_str().unwrap(),
+            MEMTABLE_THRESHOLD,
+            JSTABLE_THRESHOLD,
+        );
         let doc1 = json!({"a": 1});
         let id1 = db.insert("test", doc1.clone());
 
@@ -349,10 +361,14 @@ mod tests {
         db.delete("test", &id1);
 
         // Recover by creating new DB instance pointed to same dir
-        let mut db2 = DB::new(dir.path().to_str().unwrap(), MEMTABLE_THRESHOLD, JSTABLE_THRESHOLD);
+        let mut db2 = DB::new(
+            dir.path().to_str().unwrap(),
+            MEMTABLE_THRESHOLD,
+            JSTABLE_THRESHOLD,
+        );
         // Force load collection
         let col = db2.get_collection("test");
-        
+
         assert_eq!(col.memtable.len(), 2);
         assert_eq!(*col.memtable.documents.get(&id2).unwrap(), doc2);
         assert!(col.memtable.documents.get(&id1).unwrap().is_null());
@@ -361,7 +377,11 @@ mod tests {
     #[test]
     fn test_db_compaction() {
         let dir = tempdir().unwrap();
-        let mut db = DB::new(dir.path().to_str().unwrap(), MEMTABLE_THRESHOLD, JSTABLE_THRESHOLD);
+        let mut db = DB::new(
+            dir.path().to_str().unwrap(),
+            MEMTABLE_THRESHOLD,
+            JSTABLE_THRESHOLD,
+        );
 
         for i in 0..(MEMTABLE_THRESHOLD * JSTABLE_THRESHOLD as usize) {
             db.insert("test", json!({ "a": i }));
@@ -370,7 +390,7 @@ mod tests {
         let col = db.get_collection("test");
         assert_eq!(col.jstable_count, JSTABLE_THRESHOLD - 1);
         db.insert("test", json!({ "a": 999 })); // Trigger flush/compact
-        
+
         let col = db.get_collection("test");
         assert_eq!(col.jstable_count, 1);
     }
@@ -378,7 +398,11 @@ mod tests {
     #[test]
     fn test_db_scan() {
         let dir = tempdir().unwrap();
-        let mut db = DB::new(dir.path().to_str().unwrap(), MEMTABLE_THRESHOLD, JSTABLE_THRESHOLD);
+        let mut db = DB::new(
+            dir.path().to_str().unwrap(),
+            MEMTABLE_THRESHOLD,
+            JSTABLE_THRESHOLD,
+        );
 
         // 1. Insert into JSTable (flush)
         // 0..9
@@ -386,9 +410,9 @@ mod tests {
         for i in 0..MEMTABLE_THRESHOLD {
             ids.push(db.insert("test", json!({"val": i})));
         }
-        
+
         // 2. Insert into MemTable (triggers flush of 0..9 to jstable-0)
-        let id_val_10 = db.insert("test", json!({"val": 10})); 
+        let id_val_10 = db.insert("test", json!({"val": 10}));
 
         // 3. Shadowing: Update an item from jstable-0
         let id_to_shadow = ids[0].clone(); // val: 0
@@ -413,7 +437,7 @@ mod tests {
 
         // Check memtable item
         assert_eq!(results.get(&id_val_10).unwrap(), &json!({"val": 10}));
-        
+
         // Check separate collection
         db.insert("other", json!({"val": "other"}));
         let other_results: HashMap<String, Value> = db.scan("other").collect();
@@ -422,7 +446,7 @@ mod tests {
         let results_again: HashMap<String, Value> = db.scan("test").collect();
         assert_eq!(results_again.len(), results.len());
     }
-    
+
     #[test]
     fn test_sanitize() {
         assert_eq!(sanitize_filename("valid"), "valid");
@@ -430,4 +454,3 @@ mod tests {
         assert_eq!(sanitize_filename("test.1"), "test_2e1");
     }
 }
-

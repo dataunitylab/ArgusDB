@@ -1,7 +1,6 @@
 use async_trait::async_trait;
 use clap::Parser;
 use config::{Config, Environment, File};
-use serde::Deserialize;
 use futures::stream;
 use pgwire::api::Type;
 use pgwire::api::auth::StartupHandler;
@@ -11,6 +10,7 @@ use pgwire::api::{ClientInfo, ErrorHandler, PgWireServerHandlers};
 use pgwire::error::{PgWireError, PgWireResult};
 use pgwire::messages::data::DataRow;
 use pgwire::tokio::process_socket;
+use serde::Deserialize;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
