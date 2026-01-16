@@ -7,6 +7,7 @@ use std::io::{self, BufReader, Read, Write};
 
 pub struct JSTable {
     pub timestamp: u64,
+    pub collection: String,
     pub schema: Schema,
     pub documents: BTreeMap<String, Value>,
 }
@@ -14,13 +15,20 @@ pub struct JSTable {
 #[derive(Serialize, Deserialize)]
 struct JSTableHeader {
     timestamp: u64,
+    collection: String,
     schema: Schema,
 }
 
 impl JSTable {
-    pub fn new(timestamp: u64, schema: Schema, documents: BTreeMap<String, Value>) -> Self {
+    pub fn new(
+        timestamp: u64,
+        collection: String,
+        schema: Schema,
+        documents: BTreeMap<String, Value>,
+    ) -> Self {
         JSTable {
             timestamp,
+            collection,
             schema,
             documents,
         }
@@ -32,6 +40,7 @@ impl JSTable {
         // Write Header
         let header = JSTableHeader {
             timestamp: self.timestamp,
+            collection: self.collection.clone(),
             schema: self.schema.clone(),
         };
         // Serialize header using jsonb
@@ -59,6 +68,7 @@ impl JSTable {
 pub struct JSTableIterator {
     reader: BufReader<File>,
     pub timestamp: u64,
+    pub collection: String,
     pub schema: Schema,
 }
 
@@ -86,6 +96,7 @@ impl JSTableIterator {
         Ok(Self {
             reader,
             timestamp: header.timestamp,
+            collection: header.collection,
             schema: header.schema,
         })
     }
@@ -129,6 +140,7 @@ impl Iterator for JSTableIterator {
 pub fn read_jstable(path: &str) -> io::Result<JSTable> {
     let iterator = JSTableIterator::new(path)?;
     let timestamp = iterator.timestamp;
+    let collection = iterator.collection.clone();
     let schema = iterator.schema.clone();
 
     let mut documents = BTreeMap::new();
@@ -139,6 +151,7 @@ pub fn read_jstable(path: &str) -> io::Result<JSTable> {
 
     Ok(JSTable {
         timestamp,
+        collection,
         schema,
         documents,
     })
@@ -152,6 +165,12 @@ pub fn merge_jstables(tables: &[JSTable]) -> JSTable {
     let mut merged_documents = BTreeMap::new();
     let mut max_timestamp = 0;
 
+    let collection = if let Some(first) = tables.first() {
+        first.collection.clone()
+    } else {
+        String::new()
+    };
+
     for table in sorted_tables {
         if table.timestamp > max_timestamp {
             max_timestamp = table.timestamp;
@@ -164,7 +183,7 @@ pub fn merge_jstables(tables: &[JSTable]) -> JSTable {
 
     merged_documents.retain(|_, v| !v.is_null());
 
-    JSTable::new(max_timestamp, merged_schema, merged_documents)
+    JSTable::new(max_timestamp, collection, merged_schema, merged_documents)
 }
 
 #[cfg(test)]
@@ -187,7 +206,12 @@ mod tests {
         let mut documents = BTreeMap::new();
         documents.insert("id1".to_string(), json!({"a": 1}));
         documents.insert("id2".to_string(), json!({"a": 2}));
-        let jstable = JSTable::new(12345, schema.clone(), documents.clone());
+        let jstable = JSTable::new(
+            12345,
+            "test_col".to_string(),
+            schema.clone(),
+            documents.clone(),
+        );
 
         let file = NamedTempFile::new().unwrap();
         jstable.write(file.path().to_str().unwrap()).unwrap();
@@ -195,6 +219,7 @@ mod tests {
         let read_table = read_jstable(file.path().to_str().unwrap()).unwrap();
 
         assert_eq!(read_table.timestamp, 12345);
+        assert_eq!(read_table.collection, "test_col");
         assert_eq!(read_table.schema.types, vec![SchemaType::Object]);
         assert_eq!(read_table.documents.len(), 2);
         assert_eq!(*read_table.documents.get("id1").unwrap(), json!({"a": 1}));
@@ -215,13 +240,19 @@ mod tests {
         let mut documents = BTreeMap::new();
         documents.insert("id1".to_string(), json!({"a": 1}));
         documents.insert("id2".to_string(), json!({"a": 2}));
-        let jstable = JSTable::new(12345, schema.clone(), documents.clone());
+        let jstable = JSTable::new(
+            12345,
+            "test_col".to_string(),
+            schema.clone(),
+            documents.clone(),
+        );
 
         let file = NamedTempFile::new().unwrap();
         jstable.write(file.path().to_str().unwrap()).unwrap();
 
         let iterator = JSTableIterator::new(file.path().to_str().unwrap())?;
         assert_eq!(iterator.timestamp, 12345);
+        assert_eq!(iterator.collection, "test_col");
 
         let mut count = 0;
         let mut ids = Vec::new();
@@ -244,25 +275,26 @@ mod tests {
 
         let mut docs1 = BTreeMap::new();
         docs1.insert("id1".to_string(), json!({"v": 1}));
-        let t1 = JSTable::new(100, schema.clone(), docs1);
+        let t1 = JSTable::new(100, "test_col".to_string(), schema.clone(), docs1);
 
         let mut docs2 = BTreeMap::new();
         docs2.insert("id1".to_string(), json!({"v": 2}));
-        let t2 = JSTable::new(200, schema.clone(), docs2);
+        let t2 = JSTable::new(200, "test_col".to_string(), schema.clone(), docs2);
 
         // Case 1: t1 (older) then t2 (newer) in the slice
         let merged = merge_jstables(&[t1, t2]);
         assert_eq!(*merged.documents.get("id1").unwrap(), json!({"v": 2}));
         assert_eq!(merged.timestamp, 200);
+        assert_eq!(merged.collection, "test_col");
 
         // Case 2: Reverse order
         let mut docs1 = BTreeMap::new();
         docs1.insert("id1".to_string(), json!({"v": 1}));
-        let t1b = JSTable::new(100, schema.clone(), docs1);
+        let t1b = JSTable::new(100, "test_col".to_string(), schema.clone(), docs1);
 
         let mut docs2 = BTreeMap::new();
         docs2.insert("id1".to_string(), json!({"v": 2}));
-        let t2b = JSTable::new(200, schema.clone(), docs2);
+        let t2b = JSTable::new(200, "test_col".to_string(), schema.clone(), docs2);
 
         let merged_reverse = merge_jstables(&[t2b, t1b]);
         assert_eq!(
