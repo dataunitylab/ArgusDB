@@ -1,8 +1,7 @@
 use crate::db::DB;
-use jsonpath_rust::JsonPath;
+use jsonpath_rust::query::js_path_vals;
 use serde_json::Value;
 use std::cmp::Ordering;
-use std::str::FromStr;
 
 use tracing::{Level, span};
 
@@ -218,18 +217,13 @@ fn evaluate_expression(expr: &Expression, doc: &Value) -> Value {
     match expr {
         Expression::FieldReference(path) => get_path(doc, path).unwrap_or(Value::Null),
         Expression::JsonPath(path) => {
-            if let Ok(p) = JsonPath::from_str(path) {
-                let inst = p.find(doc);
-                if let Some(arr) = inst.as_array() {
-                    if arr.is_empty() {
-                        Value::Null
-                    } else if arr.len() == 1 {
-                        arr[0].clone()
-                    } else {
-                        inst.clone()
-                    }
+            if let Ok(nodes) = js_path_vals(path, doc) {
+                if nodes.is_empty() {
+                    Value::Null
+                } else if nodes.len() == 1 {
+                    nodes[0].clone()
                 } else {
-                    inst
+                    Value::Array(nodes.into_iter().cloned().collect())
                 }
             } else {
                 Value::Null
