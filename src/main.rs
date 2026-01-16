@@ -50,6 +50,12 @@ struct Settings {
     host: String,
     #[serde(default = "default_port")]
     port: u16,
+    #[serde(default = "default_memtable_threshold")]
+    memtable_threshold: usize,
+    #[serde(default = "default_jstable_threshold")]
+    jstable_threshold: u64,
+    #[serde(default = "default_jstable_dir")]
+    jstable_dir: String,
 }
 
 fn default_host() -> String {
@@ -58,6 +64,18 @@ fn default_host() -> String {
 
 fn default_port() -> u16 {
     5432
+}
+
+fn default_memtable_threshold() -> usize {
+    10
+}
+
+fn default_jstable_threshold() -> u64 {
+    5
+}
+
+fn default_jstable_dir() -> String {
+    "argus_data".to_string()
 }
 
 pub struct ArgusHandler {
@@ -193,7 +211,11 @@ async fn main() {
 
     let settings: Settings = builder.build().unwrap().try_deserialize().unwrap();
 
-    let db = Arc::new(Mutex::new(DB::new("argus_data")));
+    let db = Arc::new(Mutex::new(DB::new(
+        &settings.jstable_dir,
+        settings.memtable_threshold,
+        settings.jstable_threshold,
+    )));
     let handler = Arc::new(ArgusHandler::new(db));
     let processor = Arc::new(ArgusProcessor { handler });
 
