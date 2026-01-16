@@ -2,6 +2,7 @@
 
 ## General Instructions
 
+- After cloning the repo, make sure that `prek install` has been run if `.git/hooks/pre-commit` does not exist
 - Always start by examining the current status of the project in @ROADMAP.md
 - Then implement the next checklist item in the roadmap, checking off completed items
 - Items can be added or removed to the roadmap as necessary
