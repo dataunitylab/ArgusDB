@@ -10,7 +10,6 @@
 - Make a detailed plan before writing any code, refining the existing specifications if needed
 - Ask questions if any part of the specification is unclear
 - Write small amounts of well-tested code at a time and  commit after each change
-- Whenever a new library is needed or removed, make sure to update LIBRARIES.md
 - Whenever a configuration option is needed or removed, make sure to update CONFIGURATION.md
 
 ## Coding style
