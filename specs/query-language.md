@@ -8,6 +8,36 @@ The database consists of collections of JSON documents. Each document is a semi-
 
 ## Statements
 
+### CREATE COLLECTION
+
+Creates a new, empty collection in the database.
+
+**Syntax:**
+
+```sql
+CREATE COLLECTION <collection_name>
+```
+
+### DROP COLLECTION
+
+Removes an entire collection, including all of its documents and associated data.
+
+**Syntax:**
+
+```sql
+DROP COLLECTION <collection_name>
+```
+
+### SHOW COLLECTIONS
+
+Lists all available collections in the database.
+
+**Syntax:**
+
+```sql
+SHOW COLLECTIONS
+```
+
 ### INSERT
 
 The `INSERT` statement is used to add new documents to a collection.

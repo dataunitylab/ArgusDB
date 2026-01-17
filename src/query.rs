@@ -68,6 +68,13 @@ pub enum Statement {
         documents: Vec<Value>,
     },
     Select(LogicalPlan),
+    CreateCollection {
+        collection: String,
+    },
+    DropCollection {
+        collection: String,
+    },
+    ShowCollections,
 }
 
 // Iterator implementations for operators
@@ -307,30 +314,30 @@ fn compare_values(left: &Value, right: &Value) -> Option<Ordering> {
 pub fn execute_plan<'a>(
     plan: LogicalPlan,
     db: &'a DB,
-) -> Box<dyn Iterator<Item = (String, Value)> + 'a> {
+) -> Result<Box<dyn Iterator<Item = (String, Value)> + 'a>, String> {
     let span = span!(Level::DEBUG, "plan", plan = ?plan);
     let _enter = span.enter();
 
     match plan {
         LogicalPlan::Scan { collection } => {
-            let iter = db.scan(&collection);
-            Box::new(ScanOperator::new(iter))
+            let iter = db.scan(&collection)?;
+            Ok(Box::new(ScanOperator::new(iter)))
         }
         LogicalPlan::Filter { input, predicate } => {
-            let child = execute_plan(*input, db);
-            Box::new(FilterOperator::new(child, predicate))
+            let child = execute_plan(*input, db)?;
+            Ok(Box::new(FilterOperator::new(child, predicate)))
         }
         LogicalPlan::Project { input, projections } => {
-            let child = execute_plan(*input, db);
-            Box::new(ProjectOperator::new(child, projections))
+            let child = execute_plan(*input, db)?;
+            Ok(Box::new(ProjectOperator::new(child, projections)))
         }
         LogicalPlan::Limit { input, limit } => {
-            let child = execute_plan(*input, db);
-            Box::new(LimitOperator::new(child, limit))
+            let child = execute_plan(*input, db)?;
+            Ok(Box::new(LimitOperator::new(child, limit)))
         }
         LogicalPlan::Offset { input, offset } => {
-            let child = execute_plan(*input, db);
-            Box::new(OffsetOperator::new(child, offset))
+            let child = execute_plan(*input, db)?;
+            Ok(Box::new(OffsetOperator::new(child, offset)))
         }
     }
 }

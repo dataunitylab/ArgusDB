@@ -245,82 +245,73 @@ impl<'a> Iterator for MergedIterator<'a> {
 impl DB {
     pub fn new(root_dir: &str, memtable_threshold: usize, jstable_threshold: u64) -> Self {
         fs::create_dir_all(root_dir).unwrap();
-        let mut collections = HashMap::new();
-
-        if let Ok(entries) = fs::read_dir(root_dir) {
-            for entry in entries {
-                if let Ok(entry) = entry {
-                    if entry.path().is_dir() {
-                        let dir_path = entry.path();
-
-                        // Try to find collection name from JSTable-0
-                        let jstable_path = dir_path.join("jstable-0");
-                        let col_name = if jstable_path.exists() {
-                            if let Ok(iter) =
-                                jstable::JSTableIterator::new(jstable_path.to_str().unwrap())
-                            {
-                                Some(iter.collection)
-                            } else {
-                                None
-                            }
-                        } else {
-                            // Fallback to directory name (sanitized) if no jstable
-                            entry.file_name().to_str().map(|s| s.to_string())
-                        };
-
-                        if let Some(name) = col_name {
-                            let collection = Collection::new(
-                                name.clone(),
-                                dir_path,
-                                memtable_threshold,
-                                jstable_threshold,
-                            );
-                            collections.insert(name, collection);
-                        }
-                    }
-                }
-            }
-        }
-
         DB {
             root_dir: PathBuf::from(root_dir),
-            collections,
+            collections: HashMap::new(),
             memtable_threshold,
             jstable_threshold,
         }
     }
 
-    fn get_collection(&mut self, name: &str) -> &mut Collection {
-        self.collections.entry(name.to_string()).or_insert_with(|| {
-            let safe_name = sanitize_filename(name);
-            let col_dir = self.root_dir.join(safe_name);
-            Collection::new(
-                name.to_string(),
-                col_dir,
-                self.memtable_threshold,
-                self.jstable_threshold,
-            )
-        })
+    fn get_collection_mut(&mut self, name: &str) -> Result<&mut Collection, String> {
+        self.collections
+            .get_mut(name)
+            .ok_or_else(|| format!("Collection '{}' not found", name))
     }
 
-    pub fn insert(&mut self, collection: &str, doc: Value) -> String {
-        self.get_collection(collection).insert(doc)
+    fn get_collection(&self, name: &str) -> Result<&Collection, String> {
+        self.collections
+            .get(name)
+            .ok_or_else(|| format!("Collection '{}' not found", name))
     }
 
-    pub fn delete(&mut self, collection: &str, id: &str) {
-        self.get_collection(collection).delete(id);
-    }
-
-    pub fn update(&mut self, collection: &str, id: &str, doc: Value) {
-        self.get_collection(collection).update(id, doc);
-    }
-
-    pub fn scan(&self, collection: &str) -> Box<dyn Iterator<Item = (String, Value)> + '_> {
-        if let Some(col) = self.collections.get(collection) {
-            Box::new(col.scan())
-        } else {
-            Box::new(std::iter::empty())
+    pub fn create_collection(&mut self, name: &str) -> Result<(), String> {
+        if self.collections.contains_key(name) {
+            return Err(format!("Collection '{}' already exists", name));
         }
+        let safe_name = sanitize_filename(name);
+        let col_dir = self.root_dir.join(safe_name);
+        let collection = Collection::new(
+            name.to_string(),
+            col_dir,
+            self.memtable_threshold,
+            self.jstable_threshold,
+        );
+        self.collections.insert(name.to_string(), collection);
+        Ok(())
+    }
+
+    pub fn drop_collection(&mut self, name: &str) -> Result<(), String> {
+        if let Some(collection) = self.collections.remove(name) {
+            fs::remove_dir_all(collection.dir).map_err(|e| e.to_string())
+        } else {
+            Err(format!("Collection '{}' not found", name))
+        }
+    }
+
+    pub fn show_collections(&self) -> Vec<String> {
+        self.collections.keys().cloned().collect()
+    }
+
+    pub fn insert(&mut self, collection: &str, doc: Value) -> Result<String, String> {
+        self.get_collection_mut(collection).map(|c| c.insert(doc))
+    }
+
+    pub fn delete(&mut self, collection: &str, id: &str) -> Result<(), String> {
+        self.get_collection_mut(collection).map(|c| c.delete(id))
+    }
+
+    pub fn update(&mut self, collection: &str, id: &str, doc: Value) -> Result<(), String> {
+        self.get_collection_mut(collection)
+            .map(|c| c.update(id, doc))
+    }
+
+    pub fn scan(
+        &self,
+        collection: &str,
+    ) -> Result<Box<dyn Iterator<Item = (String, Value)> + '_>, String> {
+        self.get_collection(collection)
+            .map(|c| Box::new(c.scan()) as Box<dyn Iterator<Item = (String, Value)> + '_>)
     }
 }
 
@@ -341,15 +332,16 @@ mod tests {
             MEMTABLE_THRESHOLD,
             JSTABLE_THRESHOLD,
         );
+        db.create_collection("test").unwrap();
 
         for i in 0..MEMTABLE_THRESHOLD {
-            db.insert("test", json!({ "a": i }));
+            db.insert("test", json!({ "a": i })).unwrap();
         }
         let col = db.collections.get("test").unwrap();
         assert_eq!(col.memtable.len(), MEMTABLE_THRESHOLD);
         assert_eq!(col.jstable_count, 0);
 
-        db.insert("test", json!({"a": MEMTABLE_THRESHOLD}));
+        db.insert("test", json!({"a": MEMTABLE_THRESHOLD})).unwrap();
         let col = db.collections.get("test").unwrap();
         assert_eq!(col.memtable.len(), 1);
         assert_eq!(col.jstable_count, 1);
@@ -368,13 +360,14 @@ mod tests {
             MEMTABLE_THRESHOLD,
             JSTABLE_THRESHOLD,
         );
+        db.create_collection("test").unwrap();
         let doc1 = json!({"a": 1});
-        let id1 = db.insert("test", doc1.clone());
+        let id1 = db.insert("test", doc1.clone()).unwrap();
 
         let doc2 = json!({"b": "hello"});
-        db.update("test", &id1, doc2.clone());
+        db.update("test", &id1, doc2.clone()).unwrap();
 
-        db.delete("test", &id1);
+        db.delete("test", &id1).unwrap();
 
         let col = db.collections.get("test").unwrap();
         let log_path = col.dir.join("argus.log");
@@ -414,20 +407,22 @@ mod tests {
             MEMTABLE_THRESHOLD,
             JSTABLE_THRESHOLD,
         );
+        db.create_collection("test").unwrap();
         let doc1 = json!({"a": 1});
-        let id1 = db.insert("test", doc1.clone());
+        let id1 = db.insert("test", doc1.clone()).unwrap();
 
         let doc2 = json!({"b": "hello"});
-        let id2 = db.insert("test", doc2.clone());
+        let id2 = db.insert("test", doc2.clone()).unwrap();
 
-        db.delete("test", &id1);
+        db.delete("test", &id1).unwrap();
 
         // Recover by creating new DB instance pointed to same dir
-        let db2 = DB::new(
+        let mut db2 = DB::new(
             dir.path().to_str().unwrap(),
             MEMTABLE_THRESHOLD,
             JSTABLE_THRESHOLD,
         );
+        db2.create_collection("test").unwrap();
         // "test" should be loaded if it persisted JSTable or fallback to dir name
         let col = db2.collections.get("test").unwrap();
 
@@ -444,14 +439,15 @@ mod tests {
             MEMTABLE_THRESHOLD,
             JSTABLE_THRESHOLD,
         );
+        db.create_collection("test").unwrap();
 
         for i in 0..(MEMTABLE_THRESHOLD * JSTABLE_THRESHOLD as usize) {
-            db.insert("test", json!({ "a": i }));
+            db.insert("test", json!({ "a": i })).unwrap();
         }
 
         let col = db.collections.get("test").unwrap();
         assert_eq!(col.jstable_count, JSTABLE_THRESHOLD - 1);
-        db.insert("test", json!({ "a": 999 }));
+        db.insert("test", json!({ "a": 999 })).unwrap();
 
         let col = db.collections.get("test").unwrap();
         assert_eq!(col.jstable_count, 1);
@@ -465,32 +461,34 @@ mod tests {
             MEMTABLE_THRESHOLD,
             JSTABLE_THRESHOLD,
         );
+        db.create_collection("test").unwrap();
 
-        let id_to_delete = db.insert("test", json!({ "a": 100 }));
+        let id_to_delete = db.insert("test", json!({ "a": 100 })).unwrap();
 
         for i in 0..9 {
-            db.insert("test", json!({ "fill": i }));
+            db.insert("test", json!({ "fill": i })).unwrap();
         }
-        db.insert("test", json!({ "trigger_1": 1 }));
+        db.insert("test", json!({ "trigger_1": 1 })).unwrap();
 
         let col = db.collections.get("test").unwrap();
         assert_eq!(col.jstable_count, 1);
 
-        db.delete("test", &id_to_delete);
+        db.delete("test", &id_to_delete).unwrap();
 
         for i in 0..8 {
-            db.insert("test", json!({ "fill_2": i }));
+            db.insert("test", json!({ "fill_2": i })).unwrap();
         }
-        db.insert("test", json!({ "trigger_2": 1 }));
+        db.insert("test", json!({ "trigger_2": 1 })).unwrap();
 
         let col = db.collections.get("test").unwrap();
         assert_eq!(col.jstable_count, 2);
 
         for t in 0..3 {
             for i in 0..9 {
-                db.insert("test", json!({ "fill_more": t, "i": i }));
+                db.insert("test", json!({ "fill_more": t, "i": i }))
+                    .unwrap();
             }
-            db.insert("test", json!({ "trigger_more": t }));
+            db.insert("test", json!({ "trigger_more": t })).unwrap();
         }
 
         let col = db.collections.get("test").unwrap();
@@ -510,13 +508,14 @@ mod tests {
             MEMTABLE_THRESHOLD,
             JSTABLE_THRESHOLD,
         );
+        db.create_collection("test").unwrap();
 
         for i in 0..MEMTABLE_THRESHOLD {
-            db.insert("test", json!({"val": i}));
+            db.insert("test", json!({"val": i})).unwrap();
         }
-        db.insert("test", json!({"val": 10}));
+        db.insert("test", json!({"val": 10})).unwrap();
 
-        let results: HashMap<String, Value> = db.scan("test").collect();
+        let results: HashMap<String, Value> = db.scan("test").unwrap().collect();
         assert_eq!(results.len(), 11);
     }
 
@@ -525,5 +524,84 @@ mod tests {
         assert_eq!(sanitize_filename("valid"), "valid");
         assert_eq!(sanitize_filename("foo/bar"), "foo_2fbar");
         assert_eq!(sanitize_filename("test.1"), "test_2e1");
+    }
+
+    #[test]
+    fn test_create_collection() {
+        let dir = tempdir().unwrap();
+        let mut db = DB::new(
+            dir.path().to_str().unwrap(),
+            MEMTABLE_THRESHOLD,
+            JSTABLE_THRESHOLD,
+        );
+        db.create_collection("test").unwrap();
+        assert!(db.collections.contains_key("test"));
+    }
+
+    #[test]
+    fn test_create_collection_already_exists() {
+        let dir = tempdir().unwrap();
+        let mut db = DB::new(
+            dir.path().to_str().unwrap(),
+            MEMTABLE_THRESHOLD,
+            JSTABLE_THRESHOLD,
+        );
+        db.create_collection("test").unwrap();
+        let res = db.create_collection("test");
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_drop_collection() {
+        let dir = tempdir().unwrap();
+        let mut db = DB::new(
+            dir.path().to_str().unwrap(),
+            MEMTABLE_THRESHOLD,
+            JSTABLE_THRESHOLD,
+        );
+        db.create_collection("test").unwrap();
+        assert!(db.collections.contains_key("test"));
+        db.drop_collection("test").unwrap();
+        assert!(!db.collections.contains_key("test"));
+    }
+
+    #[test]
+    fn test_drop_collection_not_found() {
+        let dir = tempdir().unwrap();
+        let mut db = DB::new(
+            dir.path().to_str().unwrap(),
+            MEMTABLE_THRESHOLD,
+            JSTABLE_THRESHOLD,
+        );
+        let res = db.drop_collection("test");
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_show_collections() {
+        let dir = tempdir().unwrap();
+        let mut db = DB::new(
+            dir.path().to_str().unwrap(),
+            MEMTABLE_THRESHOLD,
+            JSTABLE_THRESHOLD,
+        );
+        db.create_collection("test1").unwrap();
+        db.create_collection("test2").unwrap();
+        let collections = db.show_collections();
+        assert_eq!(collections.len(), 2);
+        assert!(collections.contains(&"test1".to_string()));
+        assert!(collections.contains(&"test2".to_string()));
+    }
+
+    #[test]
+    fn test_insert_into_non_existent_collection() {
+        let dir = tempdir().unwrap();
+        let mut db = DB::new(
+            dir.path().to_str().unwrap(),
+            MEMTABLE_THRESHOLD,
+            JSTABLE_THRESHOLD,
+        );
+        let res = db.insert("test", json!({ "a": 1 }));
+        assert!(res.is_err());
     }
 }

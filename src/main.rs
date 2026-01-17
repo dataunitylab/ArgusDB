@@ -121,7 +121,12 @@ impl SimpleQueryHandler for ArgusHandler {
             } => {
                 let count = documents.len();
                 for doc in documents {
-                    db.insert(&collection, doc);
+                    db.insert(&collection, doc).map_err(|e| {
+                        PgWireError::ApiError(Box::new(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            e,
+                        )))
+                    })?;
                 }
                 Ok(vec![Response::Execution(Tag::new(&format!(
                     "INSERT 0 {}",
@@ -129,7 +134,12 @@ impl SimpleQueryHandler for ArgusHandler {
                 )))])
             }
             Statement::Select(plan) => {
-                let iter = execute_plan(plan, &*db);
+                let iter = execute_plan(plan, &*db).map_err(|e| {
+                    PgWireError::ApiError(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        e,
+                    )))
+                })?;
 
                 let mut rows_data = Vec::new();
                 for (_, doc) in iter {
@@ -166,6 +176,46 @@ impl SimpleQueryHandler for ArgusHandler {
                     data_rows.push(Ok(encoder.take_row()));
                 }
 
+                let row_stream = stream::iter(data_rows);
+                Ok(vec![Response::Query(QueryResponse::new(
+                    fields, row_stream,
+                ))])
+            }
+            Statement::CreateCollection { collection } => {
+                db.create_collection(&collection).map_err(|e| {
+                    PgWireError::ApiError(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        e,
+                    )))
+                })?;
+                Ok(vec![Response::Execution(Tag::new("CREATE COLLECTION"))])
+            }
+            Statement::DropCollection { collection } => {
+                db.drop_collection(&collection).map_err(|e| {
+                    PgWireError::ApiError(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        e,
+                    )))
+                })?;
+                Ok(vec![Response::Execution(Tag::new("DROP COLLECTION"))])
+            }
+            Statement::ShowCollections => {
+                let collections = db.show_collections();
+                let fields = Arc::new(vec![FieldInfo::new(
+                    "Collections".into(),
+                    None,
+                    None,
+                    Type::VARCHAR,
+                    FieldFormat::Text,
+                )]);
+                let mut data_rows: Vec<PgWireResult<DataRow>> = Vec::new();
+                for col in collections {
+                    let mut encoder = DataRowEncoder::new(fields.clone());
+                    encoder
+                        .encode_field(&col)
+                        .map_err(|e| PgWireError::ApiError(Box::new(e)))?;
+                    data_rows.push(Ok(encoder.take_row()));
+                }
                 let row_stream = stream::iter(data_rows);
                 Ok(vec![Response::Query(QueryResponse::new(
                     fields, row_stream,

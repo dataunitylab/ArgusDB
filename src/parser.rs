@@ -4,7 +4,9 @@ use sqlparser::ast::{
     self, BinaryOperator as SqlBinaryOperator, Expr, LimitClause, SetExpr, TableFactor, Values,
 };
 use sqlparser::dialect::Dialect;
+use sqlparser::keywords::Keyword;
 use sqlparser::parser::Parser;
+use sqlparser::tokenizer::Tokenizer;
 
 #[derive(Debug)]
 struct ArgusDialect;
@@ -29,6 +31,30 @@ impl Dialect for ArgusDialect {
 
 pub fn parse(sql: &str) -> Result<Statement, String> {
     let dialect = ArgusDialect {};
+    let mut tokenizer = Tokenizer::new(&dialect, sql);
+    let tokens = tokenizer.tokenize().map_err(|e| e.to_string())?;
+    let mut parser = Parser::new(&dialect).with_tokens(tokens);
+
+    let token = parser.peek_token();
+    let keyword = token.token.to_string().to_uppercase();
+
+    if keyword == "CREATE" {
+        parser.next_token();
+        parser.expect_keyword(Keyword::COLLECTION).unwrap();
+        let name = parser.parse_object_name(false).unwrap().to_string();
+        return Ok(Statement::CreateCollection { collection: name });
+    } else if keyword == "DROP" {
+        parser.next_token();
+        parser.expect_keyword(Keyword::COLLECTION).unwrap();
+        let name = parser.parse_object_name(false).unwrap().to_string();
+        return Ok(Statement::DropCollection { collection: name });
+    } else if keyword == "SHOW" {
+        parser.next_token();
+        let token = parser.next_token();
+        if token.token.to_string().to_uppercase() == "COLLECTIONS" {
+            return Ok(Statement::ShowCollections);
+        }
+    }
 
     let ast = Parser::parse_sql(&dialect, sql).map_err(|e| e.to_string())?;
 
@@ -49,7 +75,7 @@ pub fn parse(sql: &str) -> Result<Statement, String> {
             let logical_plan = convert_query(query)?;
             Ok(Statement::Select(logical_plan))
         }
-        _ => Err("Only SELECT and INSERT statements are supported".to_string()),
+        _ => Err("Unsupported statement".to_string()),
     }
 }
 
@@ -344,6 +370,40 @@ mod tests {
                 _ => panic!("Expected JsonPath"),
             },
             _ => panic!("Expected Select Project"),
+        }
+    }
+
+    #[test]
+    fn test_parse_create_collection() {
+        let sql = "CREATE COLLECTION users";
+        let stmt = parse(sql).unwrap();
+        match stmt {
+            Statement::CreateCollection { collection } => {
+                assert_eq!(collection, "users");
+            }
+            _ => panic!("Expected CreateCollection"),
+        }
+    }
+
+    #[test]
+    fn test_parse_drop_collection() {
+        let sql = "DROP COLLECTION users";
+        let stmt = parse(sql).unwrap();
+        match stmt {
+            Statement::DropCollection { collection } => {
+                assert_eq!(collection, "users");
+            }
+            _ => panic!("Expected DropCollection"),
+        }
+    }
+
+    #[test]
+    fn test_parse_show_collections() {
+        let sql = "SHOW COLLECTIONS";
+        let stmt = parse(sql).unwrap();
+        match stmt {
+            Statement::ShowCollections => {}
+            _ => panic!("Expected ShowCollections"),
         }
     }
 }
