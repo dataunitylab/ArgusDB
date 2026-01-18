@@ -245,9 +245,46 @@ impl<'a> Iterator for MergedIterator<'a> {
 impl DB {
     pub fn new(root_dir: &str, memtable_threshold: usize, jstable_threshold: u64) -> Self {
         fs::create_dir_all(root_dir).unwrap();
+        let mut collections = HashMap::new();
+
+        if let Ok(entries) = fs::read_dir(root_dir) {
+            for entry in entries {
+                if let Ok(entry) = entry {
+                    if entry.path().is_dir() {
+                        let dir_path = entry.path();
+
+                        // Try to find collection name from JSTable-0
+                        let jstable_path = dir_path.join("jstable-0");
+                        let col_name = if jstable_path.exists() {
+                            if let Ok(iter) =
+                                jstable::JSTableIterator::new(jstable_path.to_str().unwrap())
+                            {
+                                Some(iter.collection)
+                            } else {
+                                None
+                            }
+                        } else {
+                            // Fallback to directory name (sanitized) if no jstable
+                            entry.file_name().to_str().map(|s| s.to_string())
+                        };
+
+                        if let Some(name) = col_name {
+                            let collection = Collection::new(
+                                name.clone(),
+                                dir_path,
+                                memtable_threshold,
+                                jstable_threshold,
+                            );
+                            collections.insert(name, collection);
+                        }
+                    }
+                }
+            }
+        }
+
         DB {
             root_dir: PathBuf::from(root_dir),
-            collections: HashMap::new(),
+            collections,
             memtable_threshold,
             jstable_threshold,
         }
@@ -417,12 +454,11 @@ mod tests {
         db.delete("test", &id1).unwrap();
 
         // Recover by creating new DB instance pointed to same dir
-        let mut db2 = DB::new(
+        let db2 = DB::new(
             dir.path().to_str().unwrap(),
             MEMTABLE_THRESHOLD,
             JSTABLE_THRESHOLD,
         );
-        db2.create_collection("test").unwrap();
         // "test" should be loaded if it persisted JSTable or fallback to dir name
         let col = db2.collections.get("test").unwrap();
 
@@ -603,5 +639,23 @@ mod tests {
         );
         let res = db.insert("test", json!({ "a": 1 }));
         assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_db_load_collections_on_startup() {
+        let dir = tempdir().unwrap();
+        let mut db = DB::new(
+            dir.path().to_str().unwrap(),
+            MEMTABLE_THRESHOLD,
+            JSTABLE_THRESHOLD,
+        );
+        db.create_collection("test").unwrap();
+
+        let db2 = DB::new(
+            dir.path().to_str().unwrap(),
+            MEMTABLE_THRESHOLD,
+            JSTABLE_THRESHOLD,
+        );
+        assert!(db2.collections.contains_key("test"));
     }
 }
