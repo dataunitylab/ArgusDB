@@ -264,6 +264,7 @@ async fn main() {
         &settings.jstable_dir,
         settings.memtable_threshold,
         settings.jstable_threshold,
+        Some(1024 * 1024),
     )));
     let handler = Arc::new(ArgusHandler::new(db));
     let processor = Arc::new(ArgusProcessor { handler });

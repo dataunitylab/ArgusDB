@@ -1,4 +1,4 @@
-use argusdb::log::{Logger, Operation};
+use argusdb::log::{Log, Logger, Operation};
 use criterion::{Criterion, criterion_group, criterion_main};
 use tempfile::tempdir;
 

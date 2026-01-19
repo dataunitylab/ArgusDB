@@ -1,5 +1,5 @@
 use crate::jstable;
-use crate::log::{LogEntry, Logger, Operation};
+use crate::log::{Log, LogEntry, Logger, NullLogger, Operation};
 use crate::storage::MemTable;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -8,6 +8,63 @@ use std::fs;
 use std::iter::Peekable;
 use std::path::PathBuf;
 use uuid::Uuid;
+
+struct MergedIterator<'a> {
+    sources: Vec<Peekable<Box<dyn Iterator<Item = (String, Value)> + 'a>>>,
+}
+
+impl<'a> Iterator for MergedIterator<'a> {
+    type Item = (String, Value);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            // Find min_id
+            let mut min_id: Option<String> = None;
+
+            for source in &mut self.sources {
+                if let Some((id, _)) = source.peek() {
+                    match &min_id {
+                        None => min_id = Some(id.clone()),
+                        Some(current_min) => {
+                            if id < current_min {
+                                min_id = Some(id.clone());
+                            }
+                        }
+                    }
+                }
+            }
+
+            let min_id = min_id?; // If None, all exhausted
+
+            // Consume from sources
+            let mut result: Option<Value> = None;
+
+            for source in &mut self.sources {
+                let is_match = if let Some((id, _)) = source.peek() {
+                    id == &min_id
+                } else {
+                    false
+                };
+
+                if is_match {
+                    let (_, doc) = source.next().unwrap();
+                    if result.is_none() {
+                        // First match (highest priority)
+                        result = Some(doc);
+                    }
+                    // Else: ignored (shadowed)
+                }
+            }
+
+            if let Some(doc) = result
+                && !doc.is_null()
+            {
+                return Some((min_id, doc));
+            }
+            // If null (tombstone), loop again
+        }
+    }
+}
 
 fn sanitize_filename(name: &str) -> String {
     let mut result = String::new();
@@ -23,41 +80,30 @@ fn sanitize_filename(name: &str) -> String {
 
 struct Collection {
     name: String,
-    memtable: MemTable,
+    pub memtable: MemTable,
     dir: PathBuf,
     jstable_count: u64,
-    logger: Logger,
+    logger: Box<dyn Log>,
     memtable_threshold: usize,
     jstable_threshold: u64,
 }
 
 impl Collection {
-    fn new(name: String, dir: PathBuf, memtable_threshold: usize, jstable_threshold: u64) -> Self {
+    fn new(
+        name: String,
+        dir: PathBuf,
+        memtable_threshold: usize,
+        jstable_threshold: u64,
+        log_rotation_threshold: Option<u64>,
+    ) -> Self {
         fs::create_dir_all(&dir).unwrap();
         let log_path = dir.join("argus.log");
-        let logger = Logger::new(&log_path, 1024 * 1024).unwrap();
-        let mut memtable = MemTable::new();
-
-        let log_content = std::fs::read_to_string(&log_path).unwrap_or_default();
-        for line in log_content.lines() {
-            if line.is_empty() {
-                continue;
-            }
-            if let Ok(entry) = serde_json::from_str::<LogEntry>(line) {
-                match entry.op {
-                    Operation::Insert { id, doc } => {
-                        memtable.insert(id, doc);
-                    }
-                    Operation::Update { id, doc } => {
-                        memtable.update(&id, doc);
-                    }
-                    Operation::Delete { id } => {
-                        memtable.delete(&id);
-                    }
-                }
-            }
-        }
-
+        let logger: Box<dyn Log> = if let Some(threshold) = log_rotation_threshold {
+            Box::new(Logger::new(&log_path, threshold).unwrap())
+        } else {
+            Box::new(NullLogger)
+        };
+        let memtable = MemTable::new();
         // Count existing JSTables
         let mut jstable_count = 0;
         while dir.join(format!("jstable-{}", jstable_count)).exists() {
@@ -183,67 +229,16 @@ pub struct DB {
     collections: HashMap<String, Collection>,
     memtable_threshold: usize,
     jstable_threshold: u64,
-}
-
-struct MergedIterator<'a> {
-    sources: Vec<Peekable<Box<dyn Iterator<Item = (String, Value)> + 'a>>>,
-}
-
-impl<'a> Iterator for MergedIterator<'a> {
-    type Item = (String, Value);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            // Find min_id
-            let mut min_id: Option<String> = None;
-
-            for source in &mut self.sources {
-                if let Some((id, _)) = source.peek() {
-                    match &min_id {
-                        None => min_id = Some(id.clone()),
-                        Some(current_min) => {
-                            if id < current_min {
-                                min_id = Some(id.clone());
-                            }
-                        }
-                    }
-                }
-            }
-
-            let min_id = min_id?; // If None, all exhausted
-
-            // Consume from sources
-            let mut result: Option<Value> = None;
-
-            for source in &mut self.sources {
-                let is_match = if let Some((id, _)) = source.peek() {
-                    id == &min_id
-                } else {
-                    false
-                };
-
-                if is_match {
-                    let (_, doc) = source.next().unwrap();
-                    if result.is_none() {
-                        // First match (highest priority)
-                        result = Some(doc);
-                    }
-                    // Else: ignored (shadowed)
-                }
-            }
-
-            if let Some(doc) = result
-                && !doc.is_null()
-            {
-                return Some((min_id, doc));
-            }
-            // If null (tombstone), loop again
-        }
-    }
+    log_rotation_threshold: Option<u64>,
 }
 
 impl DB {
-    pub fn new(root_dir: &str, memtable_threshold: usize, jstable_threshold: u64) -> Self {
+    pub fn new(
+        root_dir: &str,
+        memtable_threshold: usize,
+        jstable_threshold: u64,
+        log_rotation_threshold: Option<u64>,
+    ) -> Self {
         fs::create_dir_all(root_dir).unwrap();
         let mut collections = HashMap::new();
 
@@ -269,12 +264,38 @@ impl DB {
                         };
 
                         if let Some(name) = col_name {
-                            let collection = Collection::new(
+                            let mut collection = Collection::new(
                                 name.clone(),
-                                dir_path,
+                                dir_path.clone(), // Clone dir_path for collection
                                 memtable_threshold,
                                 jstable_threshold,
+                                log_rotation_threshold,
                             );
+
+                            if log_rotation_threshold.is_some() {
+                                let log_path = dir_path.join("argus.log");
+                                let log_content =
+                                    std::fs::read_to_string(&log_path).unwrap_or_default();
+                                for line in log_content.lines() {
+                                    if line.is_empty() {
+                                        continue;
+                                    }
+                                    if let Ok(entry) = serde_json::from_str::<LogEntry>(line) {
+                                        match entry.op {
+                                            Operation::Insert { id, doc } => {
+                                                collection.memtable.insert(id, doc);
+                                            }
+                                            Operation::Update { id, doc } => {
+                                                collection.memtable.update(&id, doc);
+                                            }
+                                            Operation::Delete { id } => {
+                                                collection.memtable.delete(&id);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
                             collections.insert(name, collection);
                         }
                     }
@@ -287,6 +308,7 @@ impl DB {
             collections,
             memtable_threshold,
             jstable_threshold,
+            log_rotation_threshold,
         }
     }
 
@@ -313,6 +335,7 @@ impl DB {
             col_dir,
             self.memtable_threshold,
             self.jstable_threshold,
+            self.log_rotation_threshold,
         );
         self.collections.insert(name.to_string(), collection);
         Ok(())
@@ -368,6 +391,7 @@ mod tests {
             dir.path().to_str().unwrap(),
             MEMTABLE_THRESHOLD,
             JSTABLE_THRESHOLD,
+            Some(1024 * 1024),
         );
         db.create_collection("test").unwrap();
 
@@ -396,6 +420,7 @@ mod tests {
             dir.path().to_str().unwrap(),
             MEMTABLE_THRESHOLD,
             JSTABLE_THRESHOLD,
+            Some(1024 * 1024),
         );
         db.create_collection("test").unwrap();
         let doc1 = json!({"a": 1});
@@ -443,6 +468,7 @@ mod tests {
             dir.path().to_str().unwrap(),
             MEMTABLE_THRESHOLD,
             JSTABLE_THRESHOLD,
+            Some(1024 * 1024),
         );
         db.create_collection("test").unwrap();
         let doc1 = json!({"a": 1});
@@ -453,11 +479,11 @@ mod tests {
 
         db.delete("test", &id1).unwrap();
 
-        // Recover by creating new DB instance pointed to same dir
         let db2 = DB::new(
             dir.path().to_str().unwrap(),
             MEMTABLE_THRESHOLD,
             JSTABLE_THRESHOLD,
+            Some(1024 * 1024),
         );
         // "test" should be loaded if it persisted JSTable or fallback to dir name
         let col = db2.collections.get("test").unwrap();
@@ -474,6 +500,7 @@ mod tests {
             dir.path().to_str().unwrap(),
             MEMTABLE_THRESHOLD,
             JSTABLE_THRESHOLD,
+            Some(1024 * 1024),
         );
         db.create_collection("test").unwrap();
 
@@ -496,9 +523,9 @@ mod tests {
             dir.path().to_str().unwrap(),
             MEMTABLE_THRESHOLD,
             JSTABLE_THRESHOLD,
+            Some(1024 * 1024),
         );
         db.create_collection("test").unwrap();
-
         let id_to_delete = db.insert("test", json!({ "a": 100 })).unwrap();
 
         for i in 0..9 {
@@ -543,6 +570,7 @@ mod tests {
             dir.path().to_str().unwrap(),
             MEMTABLE_THRESHOLD,
             JSTABLE_THRESHOLD,
+            Some(1024 * 1024),
         );
         db.create_collection("test").unwrap();
 
@@ -569,6 +597,7 @@ mod tests {
             dir.path().to_str().unwrap(),
             MEMTABLE_THRESHOLD,
             JSTABLE_THRESHOLD,
+            Some(1024 * 1024),
         );
         db.create_collection("test").unwrap();
         assert!(db.collections.contains_key("test"));
@@ -581,6 +610,7 @@ mod tests {
             dir.path().to_str().unwrap(),
             MEMTABLE_THRESHOLD,
             JSTABLE_THRESHOLD,
+            Some(1024 * 1024),
         );
         db.create_collection("test").unwrap();
         let res = db.create_collection("test");
@@ -594,6 +624,7 @@ mod tests {
             dir.path().to_str().unwrap(),
             MEMTABLE_THRESHOLD,
             JSTABLE_THRESHOLD,
+            Some(1024 * 1024),
         );
         db.create_collection("test").unwrap();
         assert!(db.collections.contains_key("test"));
@@ -608,6 +639,7 @@ mod tests {
             dir.path().to_str().unwrap(),
             MEMTABLE_THRESHOLD,
             JSTABLE_THRESHOLD,
+            Some(1024 * 1024),
         );
         let res = db.drop_collection("test");
         assert!(res.is_err());
@@ -620,6 +652,7 @@ mod tests {
             dir.path().to_str().unwrap(),
             MEMTABLE_THRESHOLD,
             JSTABLE_THRESHOLD,
+            Some(1024 * 1024),
         );
         db.create_collection("test1").unwrap();
         db.create_collection("test2").unwrap();
@@ -636,6 +669,7 @@ mod tests {
             dir.path().to_str().unwrap(),
             MEMTABLE_THRESHOLD,
             JSTABLE_THRESHOLD,
+            Some(1024 * 1024),
         );
         let res = db.insert("test", json!({ "a": 1 }));
         assert!(res.is_err());
@@ -648,6 +682,7 @@ mod tests {
             dir.path().to_str().unwrap(),
             MEMTABLE_THRESHOLD,
             JSTABLE_THRESHOLD,
+            Some(1024 * 1024),
         );
         db.create_collection("test").unwrap();
 
@@ -655,6 +690,7 @@ mod tests {
             dir.path().to_str().unwrap(),
             MEMTABLE_THRESHOLD,
             JSTABLE_THRESHOLD,
+            Some(1024 * 1024),
         );
         assert!(db2.collections.contains_key("test"));
     }

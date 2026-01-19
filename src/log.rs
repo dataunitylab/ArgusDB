@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use tracing::{Level, span};
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum Operation {
     Insert { id: String, doc: Value },
     Update { id: String, doc: Value },
@@ -18,6 +18,11 @@ pub enum Operation {
 pub struct LogEntry {
     pub ts: DateTime<Utc>,
     pub op: Operation,
+}
+
+pub trait Log: Send {
+    fn log(&mut self, op: Operation) -> std::io::Result<()>;
+    fn rotate(&mut self) -> std::io::Result<()>;
 }
 
 pub struct Logger {
@@ -36,8 +41,10 @@ impl Logger {
             rotation_threshold,
         })
     }
+}
 
-    pub fn log(&mut self, op: Operation) -> std::io::Result<()> {
+impl Log for Logger {
+    fn log(&mut self, op: Operation) -> std::io::Result<()> {
         let span = span!(Level::DEBUG, "log", op = ?op);
         let _enter = span.enter();
 
@@ -49,13 +56,25 @@ impl Logger {
         writeln!(self.file, "{}", json)
     }
 
-    pub fn rotate(&mut self) -> std::io::Result<()> {
+    fn rotate(&mut self) -> std::io::Result<()> {
         let new_path = self.path.with_extension("log.1");
         fs::rename(&self.path, new_path)?;
         self.file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(&self.path)?;
+        Ok(())
+    }
+}
+
+pub struct NullLogger;
+
+impl Log for NullLogger {
+    fn log(&mut self, _op: Operation) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn rotate(&mut self) -> std::io::Result<()> {
         Ok(())
     }
 }

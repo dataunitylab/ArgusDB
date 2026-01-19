@@ -49,7 +49,7 @@ fn insertion_benchmark(c: &mut Criterion) {
                 for _ in 0..iters {
                     // Setup for each iteration: Create a new DB in a temp directory
                     let dir = tempdir().unwrap();
-                    let mut db = DB::new(dir.path().to_str().unwrap(), max_docs + 1, 10);
+                    let mut db = DB::new(dir.path().to_str().unwrap(), max_docs + 1, 10, None);
                     db.create_collection("test").unwrap();
 
                     let start = std::time::Instant::now();
@@ -91,7 +91,7 @@ fn query_benchmark(c: &mut Criterion) {
 
     // Let's create a separate setup for queries that returns the DB
     let dir = tempdir().unwrap();
-    let mut db = DB::new(dir.path().to_str().unwrap(), num_docs + 1, 10); // Don't flush
+    let mut db = DB::new(dir.path().to_str().unwrap(), num_docs + 1, 10, None); // Don't flush
     db.create_collection(collection_name).unwrap();
     for i in 0..num_docs {
         db.insert(collection_name, json!({"value": i})).unwrap();
