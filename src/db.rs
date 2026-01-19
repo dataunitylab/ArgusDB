@@ -79,6 +79,11 @@ fn sanitize_filename(name: &str) -> String {
     result
 }
 
+struct LoadedTable {
+    filter: BinaryFuse8,
+    index: Vec<(String, u64)>,
+}
+
 struct Collection {
     name: String,
     pub memtable: MemTable,
@@ -87,7 +92,7 @@ struct Collection {
     logger: Box<dyn Log>,
     memtable_threshold: usize,
     jstable_threshold: u64,
-    filters: Vec<BinaryFuse8>,
+    tables: Vec<LoadedTable>,
 }
 
 impl Collection {
@@ -106,20 +111,21 @@ impl Collection {
             Box::new(NullLogger)
         };
         let memtable = MemTable::new();
-        // Count existing JSTables and load filters
+        // Count existing JSTables and load filters/indices
         let mut jstable_count = 0;
-        let mut filters = Vec::new();
+        let mut tables = Vec::new();
         // Check for .summary file to confirm JSTable existence
         while dir
             .join(format!("jstable-{}.summary", jstable_count))
             .exists()
         {
             let path = dir.join(format!("jstable-{}", jstable_count));
-            if let Ok(filter) = jstable::read_filter(path.to_str().unwrap()) {
-                filters.push(filter);
-            } else {
-                panic!("Failed to read filter for jstable-{}", jstable_count);
-            }
+            let path_str = path.to_str().unwrap();
+
+            let filter = jstable::read_filter(path_str).expect("Failed to read filter");
+            let index = jstable::read_index(path_str).expect("Failed to read index");
+
+            tables.push(LoadedTable { filter, index });
             jstable_count += 1;
         }
 
@@ -131,7 +137,7 @@ impl Collection {
             logger,
             memtable_threshold,
             jstable_threshold,
-            filters,
+            tables,
         }
     }
 
@@ -176,9 +182,12 @@ impl Collection {
             .flush(jstable_path.to_str().unwrap(), self.name.clone())
             .unwrap();
 
-        // Load the new filter
-        let filter = jstable::read_filter(jstable_path.to_str().unwrap()).unwrap();
-        self.filters.push(filter);
+        // Load the new filter and index
+        let path_str = jstable_path.to_str().unwrap();
+        let filter = jstable::read_filter(path_str).unwrap();
+        let index = jstable::read_index(path_str).unwrap();
+
+        self.tables.push(LoadedTable { filter, index });
 
         self.jstable_count += 1;
         self.memtable = MemTable::new();
@@ -209,10 +218,12 @@ impl Collection {
         let new_path = self.dir.join("jstable-0");
         merged_table.write(new_path.to_str().unwrap()).unwrap();
 
-        // Reset filters
-        self.filters.clear();
-        let filter = jstable::read_filter(new_path.to_str().unwrap()).unwrap();
-        self.filters.push(filter);
+        // Reset tables
+        self.tables.clear();
+        let path_str = new_path.to_str().unwrap();
+        let filter = jstable::read_filter(path_str).unwrap();
+        let index = jstable::read_index(path_str).unwrap();
+        self.tables.push(LoadedTable { filter, index });
 
         self.jstable_count = 1;
     }
@@ -259,18 +270,29 @@ impl Collection {
         };
 
         for i in (0..self.jstable_count).rev() {
-            if let Some(filter) = self.filters.get(i as usize) {
-                if filter.contains(&hash) {
-                    // Possible match, scan the table
+            if let Some(table) = self.tables.get(i as usize) {
+                if table.filter.contains(&hash) {
+                    // Possible match, find offset using index
+                    let index = &table.index;
+                    // Find first key > id. We want the one before that.
+                    let idx = index.partition_point(|(k, _)| k.as_str() <= id);
+                    let start_offset = if idx > 0 { index[idx - 1].1 } else { 0 };
+
                     let path = self.dir.join(format!("jstable-{}", i));
-                    if let Ok(iter) = jstable::JSTableIterator::new(path.to_str().unwrap()) {
-                        for res in iter {
-                            if let Ok((rid, doc)) = res {
-                                if rid == id {
-                                    if doc.is_null() {
-                                        return None; // Tombstone
+                    if let Ok(mut iter) = jstable::JSTableIterator::new(path.to_str().unwrap()) {
+                        if iter.seek(start_offset).is_ok() {
+                            for res in iter {
+                                if let Ok((rid, doc)) = res {
+                                    if rid == id {
+                                        if doc.is_null() {
+                                            return None; // Tombstone
+                                        }
+                                        return Some(doc);
                                     }
-                                    return Some(doc);
+                                    if rid > id.to_string() {
+                                        // Not found in this table (sorted)
+                                        break;
+                                    }
                                 }
                             }
                         }

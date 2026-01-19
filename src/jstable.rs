@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs::File;
-use std::io::{self, BufReader, Read, Write};
+use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
 use xorf::BinaryFuse8;
 
 pub struct JSTable {
@@ -77,16 +77,41 @@ impl JSTable {
         summary_file.write_all(&filter_len.to_le_bytes())?;
         summary_file.write_all(&filter_bytes)?;
 
-        // Write Documents to data
+        // Write Documents to data and build index
+        let mut index: Vec<(String, u64)> = Vec::new();
+        let mut current_offset: u64 = 0;
+        let mut bytes_since_last_index: u64 = 0;
+        let mut first = true;
+
         for (id, doc) in &self.documents {
+            // Add index entry if needed
+            if first || bytes_since_last_index >= 1024 {
+                index.push((id.clone(), current_offset));
+                bytes_since_last_index = 0;
+                first = false;
+            }
+
             let record: (String, &Value) = (id.clone(), doc);
             let record_blob = jsonb::to_owned_jsonb(&record)
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
             let record_bytes = record_blob.to_vec();
             let record_len = record_bytes.len() as u32;
+
             data_file.write_all(&record_len.to_le_bytes())?;
             data_file.write_all(&record_bytes)?;
+
+            let written = 4 + record_bytes.len() as u64;
+            current_offset += written;
+            bytes_since_last_index += written;
         }
+
+        // Write Index to summary
+        let index_bytes = serde_json::to_vec(&index)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let index_len = index_bytes.len() as u32;
+        summary_file.write_all(&index_len.to_le_bytes())?;
+        summary_file.write_all(&index_bytes)?;
+
         Ok(())
     }
 }
@@ -122,7 +147,7 @@ impl JSTableIterator {
         let header: JSTableHeader = serde_json::from_str(&header_str)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
-        // We don't need to read the filter here, so we are done with summary file
+        // We don't need to read the filter or index here
 
         let data_file = File::open(data_path)?;
         let data_reader = BufReader::new(data_file);
@@ -133,6 +158,11 @@ impl JSTableIterator {
             collection: header.collection,
             schema: header.schema,
         })
+    }
+
+    pub fn seek(&mut self, offset: u64) -> io::Result<()> {
+        self.reader.seek(SeekFrom::Start(offset))?;
+        Ok(())
     }
 }
 
@@ -221,6 +251,49 @@ pub fn read_filter(path: &str) -> io::Result<BinaryFuse8> {
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
     Ok(filter)
+}
+
+pub fn read_index(path: &str) -> io::Result<Vec<(String, u64)>> {
+    let summary_path = format!("{}.summary", path);
+    let file = File::open(summary_path)?;
+    let mut reader = BufReader::new(file);
+
+    // Read Header Length
+    let mut len_buf = [0u8; 4];
+    reader.read_exact(&mut len_buf)?;
+    let header_len = u32::from_le_bytes(len_buf) as usize;
+
+    // Skip Header Blob
+    io::copy(
+        &mut reader.by_ref().take(header_len as u64),
+        &mut io::sink(),
+    )?;
+
+    // Read Filter Length
+    let mut len_buf = [0u8; 4];
+    reader.read_exact(&mut len_buf)?;
+    let filter_len = u32::from_le_bytes(len_buf) as usize;
+
+    // Skip Filter Blob
+    io::copy(
+        &mut reader.by_ref().take(filter_len as u64),
+        &mut io::sink(),
+    )?;
+
+    // Read Index Length
+    let mut len_buf = [0u8; 4];
+    reader.read_exact(&mut len_buf)?;
+    let index_len = u32::from_le_bytes(len_buf) as usize;
+
+    // Read Index Blob
+    let mut index_blob = vec![0u8; index_len];
+    reader.read_exact(&mut index_blob)?;
+
+    // Deserialize
+    let index: Vec<(String, u64)> = serde_json::from_slice(&index_blob)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+    Ok(index)
 }
 
 pub fn merge_jstables(tables: &[JSTable]) -> JSTable {
@@ -433,6 +506,65 @@ mod tests {
         let keys: Vec<String> = iterator.map(|r| r.unwrap().0).collect();
 
         assert_eq!(keys, vec!["a", "b", "c"]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_read_index() -> Result<(), Box<dyn std::error::Error>> {
+        let schema = Schema::new(SchemaType::Object);
+        let mut documents = BTreeMap::new();
+        // Insert enough data to trigger indexing (threshold 1024 bytes)
+        // Each entry: 4 bytes length + record bytes
+        // Record: ["id", "val..."]
+        // We want at least one entry after the first one.
+
+        let large_val = "x".repeat(500); // ~500 bytes
+        documents.insert("a".to_string(), json!(large_val));
+        documents.insert("b".to_string(), json!(large_val));
+        documents.insert("c".to_string(), json!(large_val));
+        // a: offset 0. write ~500+ -> offset ~500+.
+        // b: offset ~500+. bytes_written since a ~ 500+. < 1024.
+        // c: offset ~1000+. bytes_written since a ~ 1000+. >= 1024?
+        // Let's make it larger.
+        let larger_val = "x".repeat(1100);
+        documents.insert("d".to_string(), json!(larger_val));
+        documents.insert("e".to_string(), json!(1));
+
+        let jstable = JSTable::new(123, "idx_test".to_string(), schema, documents);
+        let dir = tempdir()?;
+        let path = dir.path().join("idx_table");
+        jstable.write(path.to_str().unwrap())?;
+
+        let index = read_index(path.to_str().unwrap())?;
+
+        // Should contain at least "a" (first) and "e" (after "d" which is large)
+        // actually "d" is ~1100.
+        // a (0), b (large), c (large), d (larger), e (1)
+        // sorted: a, b, c, d, e
+
+        // "a": offset 0.
+        // write "a" (large). bytes=1100.
+        // next is "b". bytes_since >= 1024. so "b" is indexed?
+        // Logic:
+        // if first || bytes_since >= 1024 { push; bytes=0 }
+        // "a": first. push ("a", 0). bytes=0.
+        // write "a" (1100). bytes=1100.
+        // "b": bytes >= 1024. push ("b", off_b). bytes=0.
+        // write "b" (1100). bytes=1100.
+        // "c": bytes >= 1024. push ("c", off_c).
+
+        assert!(!index.is_empty());
+        assert_eq!(index[0].0, "a");
+        assert_eq!(index[0].1, 0);
+
+        // Check seeking
+        let mut iter = JSTableIterator::new(path.to_str().unwrap())?;
+        // Seek to last index entry
+        let last = index.last().unwrap();
+        iter.seek(last.1)?;
+        let (key, _) = iter.next().unwrap()?;
+        assert_eq!(key, last.0);
+
         Ok(())
     }
 }

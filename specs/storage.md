@@ -17,6 +17,7 @@ The files consist of a sequence of entries. Each entry is encoded as:
     *   `timestamp`: The time the table was created (Unix timestamp in milliseconds).
     *   `schema`: The JSON Schema for the documents.
 2.  **Filter Entry**: The second entry in the file. It is a [Binary Fuse8](https://github.com/ayazhafiz/xorf) filter of the record IDs in the table, serialized as a JSON byte vector.
+3.  **Index Entry**: The third entry in the file. It is a sparse index mapping keys to byte offsets in the data file, serialized as a JSON byte vector. It is a list of `[key, offset]` pairs, created by adding an entry for the first key and then for every key that appears at least 1KB of data after the previous indexed key.
 
 ### Data File
 
