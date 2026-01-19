@@ -50,6 +50,8 @@ struct Settings {
     jstable_threshold: u64,
     #[serde(default = "default_jstable_dir")]
     jstable_dir: String,
+    #[serde(default = "default_index_threshold")]
+    index_threshold: u64,
 }
 
 fn default_host() -> String {
@@ -70,6 +72,10 @@ fn default_jstable_threshold() -> u64 {
 
 fn default_jstable_dir() -> String {
     "argus_data".to_string()
+}
+
+fn default_index_threshold() -> u64 {
+    1024
 }
 
 pub struct ArgusHandler {
@@ -264,6 +270,7 @@ async fn main() {
         &settings.jstable_dir,
         settings.memtable_threshold,
         settings.jstable_threshold,
+        settings.index_threshold,
         Some(1024 * 1024),
     )));
     let handler = Arc::new(ArgusHandler::new(db));

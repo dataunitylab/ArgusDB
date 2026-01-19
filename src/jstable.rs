@@ -35,7 +35,7 @@ impl JSTable {
         }
     }
 
-    pub fn write(&self, path: &str) -> io::Result<()> {
+    pub fn write(&self, path: &str, index_threshold: u64) -> io::Result<()> {
         let summary_path = format!("{}.summary", path);
         let data_path = format!("{}.data", path);
 
@@ -85,7 +85,7 @@ impl JSTable {
 
         for (id, doc) in &self.documents {
             // Add index entry if needed
-            if first || bytes_since_last_index >= 1024 {
+            if first || bytes_since_last_index >= index_threshold {
                 index.push((id.clone(), current_offset));
                 bytes_since_last_index = 0;
                 first = false;
@@ -355,7 +355,7 @@ mod tests {
 
         let dir = tempdir()?;
         let file_path = dir.path().join("test_table");
-        jstable.write(file_path.to_str().unwrap()).unwrap();
+        jstable.write(file_path.to_str().unwrap(), 1024).unwrap();
 
         let read_table = read_jstable(file_path.to_str().unwrap()).unwrap();
 
@@ -390,7 +390,7 @@ mod tests {
 
         let dir = tempdir()?;
         let file_path = dir.path().join("test_table");
-        jstable.write(file_path.to_str().unwrap()).unwrap();
+        jstable.write(file_path.to_str().unwrap(), 1024).unwrap();
 
         let iterator = JSTableIterator::new(file_path.to_str().unwrap())?;
         assert_eq!(iterator.timestamp, 12345);
@@ -433,7 +433,7 @@ mod tests {
 
         let dir = tempdir()?;
         let file_path = dir.path().join("test_table");
-        jstable.write(file_path.to_str().unwrap()).unwrap();
+        jstable.write(file_path.to_str().unwrap(), 1024).unwrap();
 
         let filter = read_filter(file_path.to_str().unwrap())?;
 
@@ -500,7 +500,7 @@ mod tests {
 
         let dir = tempdir()?;
         let file_path = dir.path().join("test_table");
-        jstable.write(file_path.to_str().unwrap())?;
+        jstable.write(file_path.to_str().unwrap(), 1024)?;
 
         let iterator = JSTableIterator::new(file_path.to_str().unwrap())?;
         let keys: Vec<String> = iterator.map(|r| r.unwrap().0).collect();
@@ -533,7 +533,7 @@ mod tests {
         let jstable = JSTable::new(123, "idx_test".to_string(), schema, documents);
         let dir = tempdir()?;
         let path = dir.path().join("idx_table");
-        jstable.write(path.to_str().unwrap())?;
+        jstable.write(path.to_str().unwrap(), 1024)?;
 
         let index = read_index(path.to_str().unwrap())?;
 

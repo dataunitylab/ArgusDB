@@ -92,6 +92,7 @@ struct Collection {
     logger: Box<dyn Log>,
     memtable_threshold: usize,
     jstable_threshold: u64,
+    index_threshold: u64,
     tables: Vec<LoadedTable>,
 }
 
@@ -101,6 +102,7 @@ impl Collection {
         dir: PathBuf,
         memtable_threshold: usize,
         jstable_threshold: u64,
+        index_threshold: u64,
         log_rotation_threshold: Option<u64>,
     ) -> Self {
         fs::create_dir_all(&dir).unwrap();
@@ -137,6 +139,7 @@ impl Collection {
             logger,
             memtable_threshold,
             jstable_threshold,
+            index_threshold,
             tables,
         }
     }
@@ -179,7 +182,11 @@ impl Collection {
     fn flush(&mut self) {
         let jstable_path = self.dir.join(format!("jstable-{}", self.jstable_count));
         self.memtable
-            .flush(jstable_path.to_str().unwrap(), self.name.clone())
+            .flush(
+                jstable_path.to_str().unwrap(),
+                self.name.clone(),
+                self.index_threshold,
+            )
             .unwrap();
 
         // Load the new filter and index
@@ -216,7 +223,9 @@ impl Collection {
         }
 
         let new_path = self.dir.join("jstable-0");
-        merged_table.write(new_path.to_str().unwrap()).unwrap();
+        merged_table
+            .write(new_path.to_str().unwrap(), self.index_threshold)
+            .unwrap();
 
         // Reset tables
         self.tables.clear();
@@ -319,6 +328,7 @@ pub struct DB {
     collections: HashMap<String, Collection>,
     memtable_threshold: usize,
     jstable_threshold: u64,
+    index_threshold: u64,
     log_rotation_threshold: Option<u64>,
 }
 
@@ -327,6 +337,7 @@ impl DB {
         root_dir: &str,
         memtable_threshold: usize,
         jstable_threshold: u64,
+        index_threshold: u64,
         log_rotation_threshold: Option<u64>,
     ) -> Self {
         fs::create_dir_all(root_dir).unwrap();
@@ -360,6 +371,7 @@ impl DB {
                                 dir_path.clone(), // Clone dir_path for collection
                                 memtable_threshold,
                                 jstable_threshold,
+                                index_threshold,
                                 log_rotation_threshold,
                             );
 
@@ -399,6 +411,7 @@ impl DB {
             collections,
             memtable_threshold,
             jstable_threshold,
+            index_threshold,
             log_rotation_threshold,
         }
     }
@@ -426,6 +439,7 @@ impl DB {
             col_dir,
             self.memtable_threshold,
             self.jstable_threshold,
+            self.index_threshold,
             self.log_rotation_threshold,
         );
         self.collections.insert(name.to_string(), collection);
@@ -478,6 +492,7 @@ mod tests {
 
     const MEMTABLE_THRESHOLD: usize = 10;
     const JSTABLE_THRESHOLD: u64 = 5;
+    const INDEX_THRESHOLD: u64 = 1024;
 
     #[test]
     fn test_db_flush() {
@@ -486,6 +501,7 @@ mod tests {
             dir.path().to_str().unwrap(),
             MEMTABLE_THRESHOLD,
             JSTABLE_THRESHOLD,
+            INDEX_THRESHOLD,
             Some(1024 * 1024),
         );
         db.create_collection("test").unwrap();
@@ -515,6 +531,7 @@ mod tests {
             dir.path().to_str().unwrap(),
             MEMTABLE_THRESHOLD,
             JSTABLE_THRESHOLD,
+            INDEX_THRESHOLD,
             Some(1024 * 1024),
         );
         db.create_collection("test").unwrap();
@@ -563,6 +580,7 @@ mod tests {
             dir.path().to_str().unwrap(),
             MEMTABLE_THRESHOLD,
             JSTABLE_THRESHOLD,
+            INDEX_THRESHOLD,
             Some(1024 * 1024),
         );
         db.create_collection("test").unwrap();
@@ -578,6 +596,7 @@ mod tests {
             dir.path().to_str().unwrap(),
             MEMTABLE_THRESHOLD,
             JSTABLE_THRESHOLD,
+            INDEX_THRESHOLD,
             Some(1024 * 1024),
         );
         // "test" should be loaded if it persisted JSTable or fallback to dir name
@@ -595,6 +614,7 @@ mod tests {
             dir.path().to_str().unwrap(),
             MEMTABLE_THRESHOLD,
             JSTABLE_THRESHOLD,
+            INDEX_THRESHOLD,
             Some(1024 * 1024),
         );
         db.create_collection("test").unwrap();
@@ -618,6 +638,7 @@ mod tests {
             dir.path().to_str().unwrap(),
             MEMTABLE_THRESHOLD,
             JSTABLE_THRESHOLD,
+            INDEX_THRESHOLD,
             Some(1024 * 1024),
         );
         db.create_collection("test").unwrap();
@@ -665,6 +686,7 @@ mod tests {
             dir.path().to_str().unwrap(),
             MEMTABLE_THRESHOLD,
             JSTABLE_THRESHOLD,
+            INDEX_THRESHOLD,
             Some(1024 * 1024),
         );
         db.create_collection("test").unwrap();
@@ -692,6 +714,7 @@ mod tests {
             dir.path().to_str().unwrap(),
             MEMTABLE_THRESHOLD,
             JSTABLE_THRESHOLD,
+            INDEX_THRESHOLD,
             Some(1024 * 1024),
         );
         db.create_collection("test").unwrap();
@@ -705,6 +728,7 @@ mod tests {
             dir.path().to_str().unwrap(),
             MEMTABLE_THRESHOLD,
             JSTABLE_THRESHOLD,
+            INDEX_THRESHOLD,
             Some(1024 * 1024),
         );
         db.create_collection("test").unwrap();
@@ -719,6 +743,7 @@ mod tests {
             dir.path().to_str().unwrap(),
             MEMTABLE_THRESHOLD,
             JSTABLE_THRESHOLD,
+            INDEX_THRESHOLD,
             Some(1024 * 1024),
         );
         db.create_collection("test").unwrap();
@@ -734,6 +759,7 @@ mod tests {
             dir.path().to_str().unwrap(),
             MEMTABLE_THRESHOLD,
             JSTABLE_THRESHOLD,
+            INDEX_THRESHOLD,
             Some(1024 * 1024),
         );
         let res = db.drop_collection("test");
@@ -747,6 +773,7 @@ mod tests {
             dir.path().to_str().unwrap(),
             MEMTABLE_THRESHOLD,
             JSTABLE_THRESHOLD,
+            INDEX_THRESHOLD,
             Some(1024 * 1024),
         );
         db.create_collection("test1").unwrap();
@@ -764,6 +791,7 @@ mod tests {
             dir.path().to_str().unwrap(),
             MEMTABLE_THRESHOLD,
             JSTABLE_THRESHOLD,
+            INDEX_THRESHOLD,
             Some(1024 * 1024),
         );
         let res = db.insert("test", json!({ "a": 1 }));
@@ -777,6 +805,7 @@ mod tests {
             dir.path().to_str().unwrap(),
             MEMTABLE_THRESHOLD,
             JSTABLE_THRESHOLD,
+            INDEX_THRESHOLD,
             Some(1024 * 1024),
         );
         db.create_collection("test").unwrap();
@@ -785,6 +814,7 @@ mod tests {
             dir.path().to_str().unwrap(),
             MEMTABLE_THRESHOLD,
             JSTABLE_THRESHOLD,
+            INDEX_THRESHOLD,
             Some(1024 * 1024),
         );
         assert!(db2.collections.contains_key("test"));
@@ -797,6 +827,7 @@ mod tests {
             dir.path().to_str().unwrap(),
             MEMTABLE_THRESHOLD,
             JSTABLE_THRESHOLD,
+            INDEX_THRESHOLD,
             Some(1024 * 1024),
         );
         db.create_collection("test").unwrap();

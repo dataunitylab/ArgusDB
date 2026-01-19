@@ -34,7 +34,12 @@ impl MemTable {
         self.documents.is_empty()
     }
 
-    pub fn flush(&self, path: &str, collection: String) -> std::io::Result<()> {
+    pub fn flush(
+        &self,
+        path: &str,
+        collection: String,
+        index_threshold: u64,
+    ) -> std::io::Result<()> {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -45,7 +50,7 @@ impl MemTable {
             self.schema.clone(),
             self.documents.clone(),
         );
-        jstable.write(path)
+        jstable.write(path, index_threshold)
     }
 
     pub fn insert(&mut self, id: String, doc: Value) {
