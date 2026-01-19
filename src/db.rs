@@ -109,16 +109,15 @@ impl Collection {
         // Count existing JSTables and load filters
         let mut jstable_count = 0;
         let mut filters = Vec::new();
-        while dir.join(format!("jstable-{}", jstable_count)).exists() {
+        // Check for .summary file to confirm JSTable existence
+        while dir
+            .join(format!("jstable-{}.summary", jstable_count))
+            .exists()
+        {
             let path = dir.join(format!("jstable-{}", jstable_count));
             if let Ok(filter) = jstable::read_filter(path.to_str().unwrap()) {
                 filters.push(filter);
             } else {
-                // Should not happen if file exists and is valid, but handle gracefully?
-                // For now, if we can't read the filter, we might just panic or log error.
-                // Given this is a simple DB, let's assume valid state or fail.
-                // However, we need to push *something* or fail the whole load.
-                // Let's panic to signal corruption.
                 panic!("Failed to read filter for jstable-{}", jstable_count);
             }
             jstable_count += 1;
@@ -200,8 +199,11 @@ impl Collection {
         let merged_table = jstable::merge_jstables(&tables);
 
         for i in 0..self.jstable_count {
-            let path = self.dir.join(format!("jstable-{}", i));
-            fs::remove_file(path).unwrap();
+            let base_path = self.dir.join(format!("jstable-{}", i));
+            let summary_path = format!("{}.summary", base_path.to_str().unwrap());
+            let data_path = format!("{}.data", base_path.to_str().unwrap());
+            fs::remove_file(summary_path).unwrap();
+            fs::remove_file(data_path).unwrap();
         }
 
         let new_path = self.dir.join("jstable-0");
@@ -315,10 +317,11 @@ impl DB {
                         let dir_path = entry.path();
 
                         // Try to find collection name from JSTable-0
-                        let jstable_path = dir_path.join("jstable-0");
-                        let col_name = if jstable_path.exists() {
+                        let jstable_base_path = dir_path.join("jstable-0");
+                        let jstable_summary_path = dir_path.join("jstable-0.summary");
+                        let col_name = if jstable_summary_path.exists() {
                             if let Ok(iter) =
-                                jstable::JSTableIterator::new(jstable_path.to_str().unwrap())
+                                jstable::JSTableIterator::new(jstable_base_path.to_str().unwrap())
                             {
                                 Some(iter.collection)
                             } else {

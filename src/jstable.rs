@@ -36,9 +36,13 @@ impl JSTable {
     }
 
     pub fn write(&self, path: &str) -> io::Result<()> {
-        let mut file = File::create(path)?;
+        let summary_path = format!("{}.summary", path);
+        let data_path = format!("{}.data", path);
 
-        // Write Header
+        let mut summary_file = File::create(summary_path)?;
+        let mut data_file = File::create(data_path)?;
+
+        // Write Header to summary
         let header = JSTableHeader {
             timestamp: self.timestamp,
             collection: self.collection.clone(),
@@ -49,10 +53,10 @@ impl JSTable {
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         let header_bytes = header_blob.to_vec();
         let header_len = header_bytes.len() as u32;
-        file.write_all(&header_len.to_le_bytes())?;
-        file.write_all(&header_bytes)?;
+        summary_file.write_all(&header_len.to_le_bytes())?;
+        summary_file.write_all(&header_bytes)?;
 
-        // Write Filter
+        // Write Filter to summary
         let keys: Vec<u64> = self
             .documents
             .keys()
@@ -66,22 +70,22 @@ impl JSTable {
         let filter = BinaryFuse8::try_from(&keys).map_err(|_| {
             io::Error::new(io::ErrorKind::InvalidData, "Failed to create XOR filter")
         })?;
-        // Use serde_json for filter serialization as fallback
+        // Use serde_json for filter serialization
         let filter_bytes = serde_json::to_vec(&filter)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         let filter_len = filter_bytes.len() as u32;
-        file.write_all(&filter_len.to_le_bytes())?;
-        file.write_all(&filter_bytes)?;
+        summary_file.write_all(&filter_len.to_le_bytes())?;
+        summary_file.write_all(&filter_bytes)?;
 
-        // Write Documents
+        // Write Documents to data
         for (id, doc) in &self.documents {
             let record: (String, &Value) = (id.clone(), doc);
             let record_blob = jsonb::to_owned_jsonb(&record)
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
             let record_bytes = record_blob.to_vec();
             let record_len = record_bytes.len() as u32;
-            file.write_all(&record_len.to_le_bytes())?;
-            file.write_all(&record_bytes)?;
+            data_file.write_all(&record_len.to_le_bytes())?;
+            data_file.write_all(&record_bytes)?;
         }
         Ok(())
     }
@@ -96,17 +100,20 @@ pub struct JSTableIterator {
 
 impl JSTableIterator {
     pub fn new(path: &str) -> io::Result<Self> {
-        let file = File::open(path)?;
-        let mut reader = BufReader::new(file);
+        let summary_path = format!("{}.summary", path);
+        let data_path = format!("{}.data", path);
 
-        // Read Header Length
+        let summary_file = File::open(summary_path)?;
+        let mut summary_reader = BufReader::new(summary_file);
+
+        // Read Header Length from summary
         let mut len_buf = [0u8; 4];
-        reader.read_exact(&mut len_buf)?;
+        summary_reader.read_exact(&mut len_buf)?;
         let header_len = u32::from_le_bytes(len_buf) as usize;
 
-        // Read Header Blob
+        // Read Header Blob from summary
         let mut header_blob = vec![0u8; header_len];
-        reader.read_exact(&mut header_blob)?;
+        summary_reader.read_exact(&mut header_blob)?;
 
         let header_val = jsonb::from_slice(&header_blob)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
@@ -115,18 +122,13 @@ impl JSTableIterator {
         let header: JSTableHeader = serde_json::from_str(&header_str)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
-        // Read/Skip Filter
-        let mut len_buf = [0u8; 4];
-        reader.read_exact(&mut len_buf)?;
-        let filter_len = u32::from_le_bytes(len_buf) as usize;
-        // Skip filter bytes
-        io::copy(
-            &mut reader.by_ref().take(filter_len as u64),
-            &mut io::sink(),
-        )?;
+        // We don't need to read the filter here, so we are done with summary file
+
+        let data_file = File::open(data_path)?;
+        let data_reader = BufReader::new(data_file);
 
         Ok(Self {
-            reader,
+            reader: data_reader,
             timestamp: header.timestamp,
             collection: header.collection,
             schema: header.schema,
@@ -190,7 +192,8 @@ pub fn read_jstable(path: &str) -> io::Result<JSTable> {
 }
 
 pub fn read_filter(path: &str) -> io::Result<BinaryFuse8> {
-    let file = File::open(path)?;
+    let summary_path = format!("{}.summary", path);
+    let file = File::open(summary_path)?;
     let mut reader = BufReader::new(file);
 
     // Read Header Length
@@ -254,7 +257,7 @@ mod tests {
     use super::*;
     use crate::schema::SchemaType;
     use serde_json::json;
-    use tempfile::NamedTempFile;
+    use tempfile::tempdir;
     use xorf::Filter;
 
     #[test]
@@ -277,10 +280,11 @@ mod tests {
             documents.clone(),
         );
 
-        let file = NamedTempFile::new().unwrap();
-        jstable.write(file.path().to_str().unwrap()).unwrap();
+        let dir = tempdir()?;
+        let file_path = dir.path().join("test_table");
+        jstable.write(file_path.to_str().unwrap()).unwrap();
 
-        let read_table = read_jstable(file.path().to_str().unwrap()).unwrap();
+        let read_table = read_jstable(file_path.to_str().unwrap()).unwrap();
 
         assert_eq!(read_table.timestamp, 12345);
         assert_eq!(read_table.collection, "test_col");
@@ -311,10 +315,11 @@ mod tests {
             documents.clone(),
         );
 
-        let file = NamedTempFile::new().unwrap();
-        jstable.write(file.path().to_str().unwrap()).unwrap();
+        let dir = tempdir()?;
+        let file_path = dir.path().join("test_table");
+        jstable.write(file_path.to_str().unwrap()).unwrap();
 
-        let iterator = JSTableIterator::new(file.path().to_str().unwrap())?;
+        let iterator = JSTableIterator::new(file_path.to_str().unwrap())?;
         assert_eq!(iterator.timestamp, 12345);
         assert_eq!(iterator.collection, "test_col");
 
@@ -353,10 +358,11 @@ mod tests {
             documents.clone(),
         );
 
-        let file = NamedTempFile::new().unwrap();
-        jstable.write(file.path().to_str().unwrap()).unwrap();
+        let dir = tempdir()?;
+        let file_path = dir.path().join("test_table");
+        jstable.write(file_path.to_str().unwrap()).unwrap();
 
-        let filter = read_filter(file.path().to_str().unwrap())?;
+        let filter = read_filter(file_path.to_str().unwrap())?;
 
         // Helper to hash string for filter check
         let hash = |s: &str| {
@@ -406,5 +412,27 @@ mod tests {
             json!({"v": 2})
         );
         assert_eq!(merged_reverse.timestamp, 200);
+    }
+
+    #[test]
+    fn test_jstable_keys_sorted_on_disk() -> Result<(), Box<dyn std::error::Error>> {
+        let schema = Schema::new(SchemaType::Object);
+        let mut documents = BTreeMap::new();
+        // Insert keys in non-sorted order (BTreeMap will sort them)
+        documents.insert("c".to_string(), json!(3));
+        documents.insert("a".to_string(), json!(1));
+        documents.insert("b".to_string(), json!(2));
+
+        let jstable = JSTable::new(123, "sorted_test".to_string(), schema, documents);
+
+        let dir = tempdir()?;
+        let file_path = dir.path().join("test_table");
+        jstable.write(file_path.to_str().unwrap())?;
+
+        let iterator = JSTableIterator::new(file_path.to_str().unwrap())?;
+        let keys: Vec<String> = iterator.map(|r| r.unwrap().0).collect();
+
+        assert_eq!(keys, vec!["a", "b", "c"]);
+        Ok(())
     }
 }
