@@ -13,7 +13,8 @@ The file consists of a sequence of entries. Each entry is encoded as:
 1.  **Header Entry**: The first entry in the file. It is a JSONB-encoded object containing:
     *   `timestamp`: The time the table was created (Unix timestamp in milliseconds).
     *   `schema`: The JSON Schema for the documents.
-2.  **Record Entries**: All subsequent entries. Each is a JSONB-encoded array `[id, document]`:
+2.  **Filter Entry**: The second entry in the file. It is a [Binary Fuse8](https://github.com/ayazhafiz/xorf) filter of the record IDs in the table, serialized as a JSON byte vector.
+3.  **Record Entries**: All subsequent entries. Each is a JSONB-encoded array `[id, document]`:
     *   `id`: String.
     *   `document`: The document object (or `null` for tombstone).
 

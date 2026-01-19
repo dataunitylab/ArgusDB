@@ -8,6 +8,7 @@ use std::fs;
 use std::iter::Peekable;
 use std::path::PathBuf;
 use uuid::Uuid;
+use xorf::{BinaryFuse8, Filter};
 
 struct MergedIterator<'a> {
     sources: Vec<Peekable<Box<dyn Iterator<Item = (String, Value)> + 'a>>>,
@@ -86,6 +87,7 @@ struct Collection {
     logger: Box<dyn Log>,
     memtable_threshold: usize,
     jstable_threshold: u64,
+    filters: Vec<BinaryFuse8>,
 }
 
 impl Collection {
@@ -104,9 +106,21 @@ impl Collection {
             Box::new(NullLogger)
         };
         let memtable = MemTable::new();
-        // Count existing JSTables
+        // Count existing JSTables and load filters
         let mut jstable_count = 0;
+        let mut filters = Vec::new();
         while dir.join(format!("jstable-{}", jstable_count)).exists() {
+            let path = dir.join(format!("jstable-{}", jstable_count));
+            if let Ok(filter) = jstable::read_filter(path.to_str().unwrap()) {
+                filters.push(filter);
+            } else {
+                // Should not happen if file exists and is valid, but handle gracefully?
+                // For now, if we can't read the filter, we might just panic or log error.
+                // Given this is a simple DB, let's assume valid state or fail.
+                // However, we need to push *something* or fail the whole load.
+                // Let's panic to signal corruption.
+                panic!("Failed to read filter for jstable-{}", jstable_count);
+            }
             jstable_count += 1;
         }
 
@@ -118,6 +132,7 @@ impl Collection {
             logger,
             memtable_threshold,
             jstable_threshold,
+            filters,
         }
     }
 
@@ -161,6 +176,11 @@ impl Collection {
         self.memtable
             .flush(jstable_path.to_str().unwrap(), self.name.clone())
             .unwrap();
+
+        // Load the new filter
+        let filter = jstable::read_filter(jstable_path.to_str().unwrap()).unwrap();
+        self.filters.push(filter);
+
         self.jstable_count += 1;
         self.memtable = MemTable::new();
         self.logger.rotate().unwrap();
@@ -187,6 +207,11 @@ impl Collection {
         let new_path = self.dir.join("jstable-0");
         merged_table.write(new_path.to_str().unwrap()).unwrap();
 
+        // Reset filters
+        self.filters.clear();
+        let filter = jstable::read_filter(new_path.to_str().unwrap()).unwrap();
+        self.filters.push(filter);
+
         self.jstable_count = 1;
     }
 
@@ -212,6 +237,47 @@ impl Collection {
         }
 
         MergedIterator { sources }
+    }
+
+    fn get(&self, id: &str) -> Option<Value> {
+        // 1. Check MemTable
+        if let Some(doc) = self.memtable.documents.get(id) {
+            if doc.is_null() {
+                return None; // Tombstone
+            }
+            return Some(doc.clone());
+        }
+
+        // 2. Check JSTables (Newer to Older)
+        let hash = {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            id.hash(&mut hasher);
+            hasher.finish()
+        };
+
+        for i in (0..self.jstable_count).rev() {
+            if let Some(filter) = self.filters.get(i as usize) {
+                if filter.contains(&hash) {
+                    // Possible match, scan the table
+                    let path = self.dir.join(format!("jstable-{}", i));
+                    if let Ok(iter) = jstable::JSTableIterator::new(path.to_str().unwrap()) {
+                        for res in iter {
+                            if let Ok((rid, doc)) = res {
+                                if rid == id {
+                                    if doc.is_null() {
+                                        return None; // Tombstone
+                                    }
+                                    return Some(doc);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        None
     }
 }
 
@@ -372,6 +438,10 @@ impl DB {
     ) -> Result<Box<dyn Iterator<Item = (String, Value)> + '_>, String> {
         self.get_collection(collection)
             .map(|c| Box::new(c.scan()) as Box<dyn Iterator<Item = (String, Value)> + '_>)
+    }
+
+    pub fn get(&self, collection: &str, id: &str) -> Result<Option<Value>, String> {
+        self.get_collection(collection).map(|c| c.get(id))
     }
 }
 
@@ -693,5 +763,31 @@ mod tests {
             Some(1024 * 1024),
         );
         assert!(db2.collections.contains_key("test"));
+    }
+
+    #[test]
+    fn test_db_get() {
+        let dir = tempdir().unwrap();
+        let mut db = DB::new(
+            dir.path().to_str().unwrap(),
+            MEMTABLE_THRESHOLD,
+            JSTABLE_THRESHOLD,
+            Some(1024 * 1024),
+        );
+        db.create_collection("test").unwrap();
+        let id = db.insert("test", json!({ "a": 1 })).unwrap();
+
+        let doc = db.get("test", &id).unwrap().unwrap();
+        assert_eq!(doc, json!({ "a": 1 }));
+
+        // Flush to force creation of JSTable
+        for i in 0..MEMTABLE_THRESHOLD {
+            db.insert("test", json!({ "fill": i })).unwrap();
+        }
+
+        let doc = db.get("test", &id).unwrap().unwrap();
+        assert_eq!(doc, json!({ "a": 1 }));
+
+        assert!(db.get("test", "non-existent").unwrap().is_none());
     }
 }
