@@ -38,7 +38,7 @@ pub enum LogicalOperator {
     Or,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum LogicalPlan {
     Scan {
         collection: String,
@@ -61,7 +61,7 @@ pub enum LogicalPlan {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Statement {
     Insert {
         collection: String,
