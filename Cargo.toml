@@ -28,6 +28,10 @@ tempfile = "3.10.1"
 name = "db"
 harness = false
 
+[[bench]]
+name = "logging"
+harness = false
+
 [[bin]]
 name = "argusdb"
 path = "src/bin/argusdb.rs"
