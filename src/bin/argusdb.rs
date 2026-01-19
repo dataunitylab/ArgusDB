@@ -17,17 +17,9 @@ use tokio::sync::Mutex;
 use tracing::{Level, info, span};
 use tracing_subscriber;
 
-pub mod db;
-pub mod jstable;
-pub mod log;
-pub mod parser;
-pub mod query;
-pub mod schema;
-pub mod storage;
-
-use crate::db::DB;
-use crate::parser as argus_parser;
-use crate::query::{Statement, execute_plan};
+use argusdb::db::DB;
+use argusdb::parser as argus_parser;
+use argusdb::query::{Statement, execute_plan};
 
 /// ArgusDB Server
 #[derive(Parser, Debug)]
