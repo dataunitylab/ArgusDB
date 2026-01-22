@@ -10,8 +10,10 @@ use std::path::PathBuf;
 use uuid::Uuid;
 use xorf::{BinaryFuse8, Filter};
 
+type SourceIterator<'a> = Peekable<Box<dyn Iterator<Item = (String, Value)> + 'a>>;
+
 struct MergedIterator<'a> {
-    sources: Vec<Peekable<Box<dyn Iterator<Item = (String, Value)> + 'a>>>,
+    sources: Vec<SourceIterator<'a>>,
 }
 
 impl<'a> Iterator for MergedIterator<'a> {
@@ -238,7 +240,7 @@ impl Collection {
     }
 
     fn scan(&self) -> impl Iterator<Item = (String, Value)> + '_ {
-        let mut sources: Vec<Peekable<Box<dyn Iterator<Item = (String, Value)>>>> = Vec::new();
+        let mut sources: Vec<SourceIterator> = Vec::new();
 
         // 1. MemTable Iterator (Priority 0 - Highest)
         let mem_iter = self
@@ -290,18 +292,16 @@ impl Collection {
                     let path = self.dir.join(format!("jstable-{}", i));
                     if let Ok(mut iter) = jstable::JSTableIterator::new(path.to_str().unwrap()) {
                         if iter.seek(start_offset).is_ok() {
-                            for res in iter {
-                                if let Ok((rid, doc)) = res {
-                                    if rid == id {
-                                        if doc.is_null() {
-                                            return None; // Tombstone
-                                        }
-                                        return Some(doc);
+                            for (rid, doc) in iter.flatten() {
+                                if rid == id {
+                                    if doc.is_null() {
+                                        return None; // Tombstone
                                     }
-                                    if rid > id.to_string() {
-                                        // Not found in this table (sorted)
-                                        break;
-                                    }
+                                    return Some(doc);
+                                }
+                                if rid.as_str() > id {
+                                    // Not found in this table (sorted)
+                                    break;
                                 }
                             }
                         }
@@ -344,63 +344,61 @@ impl DB {
         let mut collections = HashMap::new();
 
         if let Ok(entries) = fs::read_dir(root_dir) {
-            for entry in entries {
-                if let Ok(entry) = entry {
-                    if entry.path().is_dir() {
-                        let dir_path = entry.path();
+            for entry in entries.flatten() {
+                if entry.path().is_dir() {
+                    let dir_path = entry.path();
 
-                        // Try to find collection name from JSTable-0
-                        let jstable_base_path = dir_path.join("jstable-0");
-                        let jstable_summary_path = dir_path.join("jstable-0.summary");
-                        let col_name = if jstable_summary_path.exists() {
-                            if let Ok(iter) =
-                                jstable::JSTableIterator::new(jstable_base_path.to_str().unwrap())
-                            {
-                                Some(iter.collection)
-                            } else {
-                                None
-                            }
+                    // Try to find collection name from JSTable-0
+                    let jstable_base_path = dir_path.join("jstable-0");
+                    let jstable_summary_path = dir_path.join("jstable-0.summary");
+                    let col_name = if jstable_summary_path.exists() {
+                        if let Ok(iter) =
+                            jstable::JSTableIterator::new(jstable_base_path.to_str().unwrap())
+                        {
+                            Some(iter.collection)
                         } else {
-                            // Fallback to directory name (sanitized) if no jstable
-                            entry.file_name().to_str().map(|s| s.to_string())
-                        };
+                            None
+                        }
+                    } else {
+                        // Fallback to directory name (sanitized) if no jstable
+                        entry.file_name().to_str().map(|s| s.to_string())
+                    };
 
-                        if let Some(name) = col_name {
-                            let mut collection = Collection::new(
-                                name.clone(),
-                                dir_path.clone(), // Clone dir_path for collection
-                                memtable_threshold,
-                                jstable_threshold,
-                                index_threshold,
-                                log_rotation_threshold,
-                            );
+                    if let Some(name) = col_name {
+                        let mut collection = Collection::new(
+                            name.clone(),
+                            dir_path.clone(), // Clone dir_path for collection
+                            memtable_threshold,
+                            jstable_threshold,
+                            index_threshold,
+                            log_rotation_threshold,
+                        );
 
-                            if log_rotation_threshold.is_some() {
-                                let log_path = dir_path.join("argus.log");
-                                let log_content =
-                                    std::fs::read_to_string(&log_path).unwrap_or_default();
-                                for line in log_content.lines() {
-                                    if line.is_empty() {
-                                        continue;
-                                    }
-                                    if let Ok(entry) = serde_json::from_str::<LogEntry>(line) {
-                                        match entry.op {
-                                            Operation::Insert { id, doc } => {
-                                                collection.memtable.insert(id, doc);
-                                            }
-                                            Operation::Update { id, doc } => {
-                                                collection.memtable.update(&id, doc);
-                                            }
-                                            Operation::Delete { id } => {
-                                                collection.memtable.delete(&id);
-                                            }
+                        if log_rotation_threshold.is_some() {
+                            let log_path = dir_path.join("argus.log");
+                            let log_content =
+                                std::fs::read_to_string(&log_path).unwrap_or_default();
+                            for line in log_content.lines() {
+                                if line.is_empty() {
+                                    continue;
+                                }
+                                if let Ok(entry) = serde_json::from_str::<LogEntry>(line) {
+                                    match entry.op {
+                                        Operation::Insert { id, doc } => {
+                                            collection.memtable.insert(id, doc);
+                                        }
+                                        Operation::Update { id, doc } => {
+                                            collection.memtable.update(&id, doc);
+                                        }
+                                        Operation::Delete { id } => {
+                                            collection.memtable.delete(&id);
                                         }
                                     }
                                 }
                             }
-
-                            collections.insert(name, collection);
                         }
+
+                        collections.insert(name, collection);
                     }
                 }
             }

@@ -15,7 +15,6 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tracing::{Level, info, span};
-use tracing_subscriber;
 
 use argusdb::db::DB;
 use argusdb::parser as argus_parser;
@@ -101,11 +100,7 @@ impl SimpleQueryHandler for ArgusHandler {
             Ok(s) => s,
             Err(e) => {
                 return Ok(vec![Response::Error(Box::new(
-                    PgWireError::ApiError(Box::new(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        e,
-                    )))
-                    .into(),
+                    PgWireError::ApiError(Box::new(std::io::Error::other(e))).into(),
                 ))]);
             }
         };
@@ -119,12 +114,8 @@ impl SimpleQueryHandler for ArgusHandler {
             } => {
                 let count = documents.len();
                 for doc in documents {
-                    db.insert(&collection, doc).map_err(|e| {
-                        PgWireError::ApiError(Box::new(std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            e,
-                        )))
-                    })?;
+                    db.insert(&collection, doc)
+                        .map_err(|e| PgWireError::ApiError(Box::new(std::io::Error::other(e))))?;
                 }
                 Ok(vec![Response::Execution(Tag::new(&format!(
                     "INSERT 0 {}",
@@ -132,12 +123,8 @@ impl SimpleQueryHandler for ArgusHandler {
                 )))])
             }
             Statement::Select(plan) => {
-                let iter = execute_plan(plan, &*db).map_err(|e| {
-                    PgWireError::ApiError(Box::new(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        e,
-                    )))
-                })?;
+                let iter = execute_plan(plan, &db)
+                    .map_err(|e| PgWireError::ApiError(Box::new(std::io::Error::other(e))))?;
 
                 let mut rows_data = Vec::new();
                 for (_, doc) in iter {
@@ -154,9 +141,7 @@ impl SimpleQueryHandler for ArgusHandler {
                 let obj = first.as_object().unwrap();
                 let fields: Vec<FieldInfo> = obj
                     .keys()
-                    .map(|k| {
-                        FieldInfo::new(k.clone().into(), None, None, Type::JSON, FieldFormat::Text)
-                    })
+                    .map(|k| FieldInfo::new(k.clone(), None, None, Type::JSON, FieldFormat::Text))
                     .collect();
                 let fields = Arc::new(fields);
 
@@ -180,21 +165,13 @@ impl SimpleQueryHandler for ArgusHandler {
                 ))])
             }
             Statement::CreateCollection { collection } => {
-                db.create_collection(&collection).map_err(|e| {
-                    PgWireError::ApiError(Box::new(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        e,
-                    )))
-                })?;
+                db.create_collection(&collection)
+                    .map_err(|e| PgWireError::ApiError(Box::new(std::io::Error::other(e))))?;
                 Ok(vec![Response::Execution(Tag::new("CREATE COLLECTION"))])
             }
             Statement::DropCollection { collection } => {
-                db.drop_collection(&collection).map_err(|e| {
-                    PgWireError::ApiError(Box::new(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        e,
-                    )))
-                })?;
+                db.drop_collection(&collection)
+                    .map_err(|e| PgWireError::ApiError(Box::new(std::io::Error::other(e))))?;
                 Ok(vec![Response::Execution(Tag::new("DROP COLLECTION"))])
             }
             Statement::ShowCollections => {

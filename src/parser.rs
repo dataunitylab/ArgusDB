@@ -13,13 +13,13 @@ struct ArgusDialect;
 
 impl Dialect for ArgusDialect {
     fn is_identifier_start(&self, ch: char) -> bool {
-        ('a'..='z').contains(&ch) || ('A'..='Z').contains(&ch) || ch == '_' || ch == '$'
+        ch.is_ascii_lowercase() || ch.is_ascii_uppercase() || ch == '_' || ch == '$'
     }
 
     fn is_identifier_part(&self, ch: char) -> bool {
-        ('a'..='z').contains(&ch)
-            || ('A'..='Z').contains(&ch)
-            || ('0'..='9').contains(&ch)
+        ch.is_ascii_lowercase()
+            || ch.is_ascii_uppercase()
+            || ch.is_ascii_digit()
             || ch == '_'
             || ch == '$'
     }
@@ -110,14 +110,12 @@ fn convert_query(query: &ast::Query) -> Result<LogicalPlan, String> {
     let mut limit_val = None;
     let mut offset_val = None;
 
-    if let Some(limit_clause) = &query.limit_clause {
-        if let LimitClause::LimitOffset { limit, offset, .. } = limit_clause {
-            if let Some(l) = limit {
-                limit_val = Some(parse_limit_expr(l)?);
-            }
-            if let Some(o) = offset {
-                offset_val = Some(parse_limit_expr(&o.value)?);
-            }
+    if let Some(LimitClause::LimitOffset { limit, offset, .. }) = &query.limit_clause {
+        if let Some(l) = limit {
+            limit_val = Some(parse_limit_expr(l)?);
+        }
+        if let Some(o) = offset {
+            offset_val = Some(parse_limit_expr(&o.value)?);
         }
     }
 
