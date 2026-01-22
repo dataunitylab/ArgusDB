@@ -1,42 +1,49 @@
-use serde::{Deserialize, Serialize};
+pub use jsonb_schema::schema::{InstanceType, Schema, SingleOrVec};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-#[derive(Debug, PartialEq, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "lowercase")]
-pub enum SchemaType {
-    String,
-    Integer,
-    Number,
-    Boolean,
-    Null,
-    Object,
-    Array,
+pub trait SchemaExt {
+    fn new(instance_type: InstanceType) -> Self;
+    fn merge(&mut self, other: Self);
 }
 
-#[derive(Debug, PartialEq, Serialize, Deserialize, Clone)]
-pub struct Schema {
-    #[serde(rename = "type")]
-    pub types: Vec<SchemaType>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub properties: Option<BTreeMap<String, Schema>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub items: Option<Box<Schema>>,
-}
-
-impl Schema {
-    pub fn new(schema_type: SchemaType) -> Self {
+impl SchemaExt for Schema {
+    fn new(instance_type: InstanceType) -> Self {
         Schema {
-            types: vec![schema_type],
-            properties: None,
-            items: None,
+            instance_type: Some(SingleOrVec::Single(instance_type)),
+            ..Default::default()
         }
     }
 
-    pub fn merge(&mut self, other: Self) {
-        for t in other.types {
-            if !self.types.contains(&t) {
-                self.types.push(t);
+    fn merge(&mut self, other: Self) {
+        // Merge instance_type
+        if let Some(other_type) = other.instance_type {
+            match &mut self.instance_type {
+                Some(self_type) => {
+                    let mut types = match self_type {
+                        SingleOrVec::Single(t) => vec![t.clone()],
+                        SingleOrVec::Vec(v) => v.clone(),
+                    };
+                    let other_types = match other_type {
+                        SingleOrVec::Single(t) => vec![t],
+                        SingleOrVec::Vec(v) => v,
+                    };
+
+                    for t in other_types {
+                        if !types.contains(&t) {
+                            types.push(t);
+                        }
+                    }
+
+                    if types.len() == 1 {
+                        *self_type = SingleOrVec::Single(types[0].clone());
+                    } else {
+                        *self_type = SingleOrVec::Vec(types);
+                    }
+                }
+                None => {
+                    self.instance_type = Some(other_type);
+                }
             }
         }
 
@@ -63,50 +70,39 @@ impl Schema {
 
 pub fn infer_schema(doc: &Value) -> Schema {
     match doc {
-        Value::Null => Schema::new(SchemaType::Null),
-        Value::Bool(_) => Schema::new(SchemaType::Boolean),
+        Value::Null => Schema::new(InstanceType::Null),
+        Value::Bool(_) => Schema::new(InstanceType::Boolean),
         Value::Number(n) => {
             if n.is_i64() {
-                Schema::new(SchemaType::Integer)
+                Schema::new(InstanceType::Integer)
             } else {
-                Schema::new(SchemaType::Number)
+                Schema::new(InstanceType::Number)
             }
         }
-        Value::String(_) => Schema::new(SchemaType::String),
+        Value::String(_) => Schema::new(InstanceType::String),
         Value::Array(arr) => {
             let mut items_schema = if let Some(first) = arr.first() {
                 infer_schema(first)
             } else {
-                // Empty array, we can't infer the type.
-                // We could represent this as a special "unknown" type,
-                // but for now we'll just make it an empty schema.
-                Schema {
-                    types: vec![],
-                    properties: None,
-                    items: None,
-                }
+                Schema::default()
             };
 
             for item in arr.iter().skip(1) {
                 items_schema.merge(infer_schema(item));
             }
 
-            Schema {
-                types: vec![SchemaType::Array],
-                properties: None,
-                items: Some(Box::new(items_schema)),
-            }
+            let mut schema = Schema::new(InstanceType::Array);
+            schema.items = Some(Box::new(items_schema));
+            schema
         }
         Value::Object(obj) => {
             let mut properties = BTreeMap::new();
             for (key, value) in obj {
                 properties.insert(key.clone(), infer_schema(value));
             }
-            Schema {
-                types: vec![SchemaType::Object],
-                properties: Some(properties),
-                items: None,
-            }
+            let mut schema = Schema::new(InstanceType::Object);
+            schema.properties = Some(properties);
+            schema
         }
     }
 }
@@ -116,6 +112,14 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn get_types(schema: &Schema) -> Vec<InstanceType> {
+        match &schema.instance_type {
+            Some(SingleOrVec::Single(t)) => vec![t.clone()],
+            Some(SingleOrVec::Vec(v)) => v.clone(),
+            None => vec![],
+        }
+    }
+
     #[test]
     fn test_infer_simple_object() {
         let doc = json!({
@@ -123,10 +127,16 @@ mod tests {
             "b": "hello"
         });
         let schema = infer_schema(&doc);
-        assert_eq!(schema.types, vec![SchemaType::Object]);
-        let props = schema.properties.unwrap();
-        assert_eq!(props.get("a").unwrap().types, vec![SchemaType::Integer]);
-        assert_eq!(props.get("b").unwrap().types, vec![SchemaType::String]);
+        assert_eq!(get_types(&schema), vec![InstanceType::Object]);
+        let props = schema.properties.as_ref().unwrap();
+        assert_eq!(
+            get_types(props.get("a").unwrap()),
+            vec![InstanceType::Integer]
+        );
+        assert_eq!(
+            get_types(props.get("b").unwrap()),
+            vec![InstanceType::String]
+        );
     }
 
     #[test]
@@ -137,32 +147,36 @@ mod tests {
             }
         });
         let schema = infer_schema(&doc);
-        assert_eq!(schema.types, vec![SchemaType::Object]);
-        let props = schema.properties.unwrap();
+        assert_eq!(get_types(&schema), vec![InstanceType::Object]);
+        let props = schema.properties.as_ref().unwrap();
         let a_schema = props.get("a").unwrap();
-        assert_eq!(a_schema.types, vec![SchemaType::Object]);
+        assert_eq!(get_types(a_schema), vec![InstanceType::Object]);
         let a_props = a_schema.properties.as_ref().unwrap();
-        assert_eq!(a_props.get("b").unwrap().types, vec![SchemaType::Boolean]);
+        assert_eq!(
+            get_types(a_props.get("b").unwrap()),
+            vec![InstanceType::Boolean]
+        );
     }
 
     #[test]
     fn test_infer_array() {
         let doc = json!([1, 2, 3]);
         let schema = infer_schema(&doc);
-        assert_eq!(schema.types, vec![SchemaType::Array]);
-        let items = schema.items.unwrap();
-        assert_eq!(items.types, vec![SchemaType::Integer]);
+        assert_eq!(get_types(&schema), vec![InstanceType::Array]);
+        let items = schema.items.as_ref().unwrap();
+        assert_eq!(get_types(&items), vec![InstanceType::Integer]);
     }
 
     #[test]
     fn test_infer_array_mixed_types() {
         let doc = json!([1, "hello"]);
         let schema = infer_schema(&doc);
-        assert_eq!(schema.types, vec![SchemaType::Array]);
-        let items = schema.items.unwrap();
-        assert_eq!(items.types.len(), 2);
-        assert!(items.types.contains(&SchemaType::Integer));
-        assert!(items.types.contains(&SchemaType::String));
+        assert_eq!(get_types(&schema), vec![InstanceType::Array]);
+        let items = schema.items.as_ref().unwrap();
+        let types = get_types(&items);
+        assert_eq!(types.len(), 2);
+        assert!(types.contains(&InstanceType::Integer));
+        assert!(types.contains(&InstanceType::String));
     }
 
     #[test]
@@ -171,14 +185,20 @@ mod tests {
         let schema2 = infer_schema(&json!({"b": 2, "c": "world"}));
         schema1.merge(schema2);
 
-        assert_eq!(schema1.types, vec![SchemaType::Object]);
-        let props = schema1.properties.unwrap();
-        assert_eq!(props.get("a").unwrap().types, vec![SchemaType::Integer]);
-        let b_types = &props.get("b").unwrap().types;
+        assert_eq!(get_types(&schema1), vec![InstanceType::Object]);
+        let props = schema1.properties.as_ref().unwrap();
+        assert_eq!(
+            get_types(props.get("a").unwrap()),
+            vec![InstanceType::Integer]
+        );
+        let b_types = get_types(props.get("b").unwrap());
         assert_eq!(b_types.len(), 2);
-        assert!(b_types.contains(&SchemaType::String));
-        assert!(b_types.contains(&SchemaType::Integer));
-        assert_eq!(props.get("c").unwrap().types, vec![SchemaType::String]);
+        assert!(b_types.contains(&InstanceType::String));
+        assert!(b_types.contains(&InstanceType::Integer));
+        assert_eq!(
+            get_types(props.get("c").unwrap()),
+            vec![InstanceType::String]
+        );
     }
 
     #[test]
@@ -188,42 +208,48 @@ mod tests {
             {"b": "hello"}
         ]);
         let schema = infer_schema(&doc);
-        assert_eq!(schema.types, vec![SchemaType::Array]);
-        let items = schema.items.unwrap();
-        assert_eq!(items.types, vec![SchemaType::Object]);
-        let props = items.properties.unwrap();
-        assert_eq!(props.get("a").unwrap().types, vec![SchemaType::Integer]);
-        assert_eq!(props.get("b").unwrap().types, vec![SchemaType::String]);
+        assert_eq!(get_types(&schema), vec![InstanceType::Array]);
+        let items = schema.items.as_ref().unwrap();
+        assert_eq!(get_types(&items), vec![InstanceType::Object]);
+        let props = items.properties.as_ref().unwrap();
+        assert_eq!(
+            get_types(props.get("a").unwrap()),
+            vec![InstanceType::Integer]
+        );
+        assert_eq!(
+            get_types(props.get("b").unwrap()),
+            vec![InstanceType::String]
+        );
     }
 
     #[test]
     fn test_schema_type_variants() {
         assert_eq!(
-            serde_json::to_string(&SchemaType::String).unwrap(),
+            serde_json::to_string(&InstanceType::String).unwrap(),
             r#""string""#
         );
         assert_eq!(
-            serde_json::to_string(&SchemaType::Integer).unwrap(),
+            serde_json::to_string(&InstanceType::Integer).unwrap(),
             r#""integer""#
         );
         assert_eq!(
-            serde_json::to_string(&SchemaType::Number).unwrap(),
+            serde_json::to_string(&InstanceType::Number).unwrap(),
             r#""number""#
         );
         assert_eq!(
-            serde_json::to_string(&SchemaType::Boolean).unwrap(),
+            serde_json::to_string(&InstanceType::Boolean).unwrap(),
             r#""boolean""#
         );
         assert_eq!(
-            serde_json::to_string(&SchemaType::Null).unwrap(),
+            serde_json::to_string(&InstanceType::Null).unwrap(),
             r#""null""#
         );
         assert_eq!(
-            serde_json::to_string(&SchemaType::Object).unwrap(),
+            serde_json::to_string(&InstanceType::Object).unwrap(),
             r#""object""#
         );
         assert_eq!(
-            serde_json::to_string(&SchemaType::Array).unwrap(),
+            serde_json::to_string(&InstanceType::Array).unwrap(),
             r#""array""#
         );
     }

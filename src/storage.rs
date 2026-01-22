@@ -1,5 +1,5 @@
 use crate::jstable::JSTable;
-use crate::schema::{Schema, infer_schema};
+use crate::schema::{Schema, SchemaExt, infer_schema};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
@@ -18,11 +18,7 @@ impl MemTable {
     pub fn new() -> Self {
         MemTable {
             documents: BTreeMap::new(),
-            schema: Schema {
-                types: vec![],
-                properties: None,
-                items: None,
-            },
+            schema: Schema::default(),
         }
     }
 
@@ -73,8 +69,16 @@ impl MemTable {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schema::SchemaType;
+    use crate::schema::{InstanceType, SingleOrVec};
     use serde_json::json;
+
+    fn get_types(schema: &Schema) -> Vec<InstanceType> {
+        match &schema.instance_type {
+            Some(SingleOrVec::Single(t)) => vec![t.clone()],
+            Some(SingleOrVec::Vec(v)) => v.clone(),
+            None => vec![],
+        }
+    }
 
     #[test]
     fn test_memtable_insert() {
@@ -85,10 +89,16 @@ mod tests {
         assert_eq!(memtable.len(), 2);
 
         let schema = memtable.schema;
-        assert_eq!(schema.types, vec![SchemaType::Object]);
+        assert_eq!(get_types(&schema), vec![InstanceType::Object]);
         let props = schema.properties.unwrap();
-        assert_eq!(props.get("a").unwrap().types, vec![SchemaType::Integer]);
-        assert_eq!(props.get("b").unwrap().types, vec![SchemaType::String]);
+        assert_eq!(
+            get_types(props.get("a").unwrap()),
+            vec![InstanceType::Integer]
+        );
+        assert_eq!(
+            get_types(props.get("b").unwrap()),
+            vec![InstanceType::String]
+        );
     }
 
     #[test]
@@ -102,9 +112,15 @@ mod tests {
         assert_eq!(*doc, json!({"b": "hello"}));
 
         let schema = memtable.schema;
-        assert_eq!(schema.types, vec![SchemaType::Object]);
+        assert_eq!(get_types(&schema), vec![InstanceType::Object]);
         let props = schema.properties.unwrap();
-        assert_eq!(props.get("a").unwrap().types, vec![SchemaType::Integer]);
-        assert_eq!(props.get("b").unwrap().types, vec![SchemaType::String]);
+        assert_eq!(
+            get_types(props.get("a").unwrap()),
+            vec![InstanceType::Integer]
+        );
+        assert_eq!(
+            get_types(props.get("b").unwrap()),
+            vec![InstanceType::String]
+        );
     }
 }

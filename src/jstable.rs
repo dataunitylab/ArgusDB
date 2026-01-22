@@ -1,4 +1,4 @@
-use crate::schema::Schema;
+use crate::schema::{InstanceType, Schema, SchemaExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -49,7 +49,7 @@ impl JSTable {
             schema: self.schema.clone(),
         };
         // Serialize header using jsonb
-        let header_blob = jsonb::to_owned_jsonb(&header)
+        let header_blob = jsonb_schema::to_owned_jsonb(&header)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         let header_bytes = header_blob.to_vec();
         let header_len = header_bytes.len() as u32;
@@ -92,7 +92,7 @@ impl JSTable {
             }
 
             let record: (String, &Value) = (id.clone(), doc);
-            let record_blob = jsonb::to_owned_jsonb(&record)
+            let record_blob = jsonb_schema::to_owned_jsonb(&record)
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
             let record_bytes = record_blob.to_vec();
             let record_len = record_bytes.len() as u32;
@@ -140,9 +140,9 @@ impl JSTableIterator {
         let mut header_blob = vec![0u8; header_len];
         summary_reader.read_exact(&mut header_blob)?;
 
-        let header_val = jsonb::from_slice(&header_blob)
+        let header_val = jsonb_schema::from_slice(&header_blob)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        // Convert jsonb::Value -> String -> T
+        // Convert jsonb_schema::Value -> String -> T
         let header_str = header_val.to_string();
         let header: JSTableHeader = serde_json::from_str(&header_str)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
@@ -179,7 +179,7 @@ impl Iterator for JSTableIterator {
                     return Some(Err(e));
                 }
 
-                let record_val = match jsonb::from_slice(&record_blob)
+                let record_val = match jsonb_schema::from_slice(&record_blob)
                     .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
                 {
                     Ok(v) => v,
@@ -300,7 +300,7 @@ pub fn merge_jstables(tables: &[JSTable]) -> JSTable {
     let mut sorted_tables: Vec<&JSTable> = tables.iter().collect();
     sorted_tables.sort_by_key(|t| t.timestamp);
 
-    let mut merged_schema = Schema::new(crate::schema::SchemaType::Object);
+    let mut merged_schema = Schema::new(InstanceType::Object);
     let mut merged_documents = BTreeMap::new();
     let mut max_timestamp = 0;
 
@@ -328,21 +328,26 @@ pub fn merge_jstables(tables: &[JSTable]) -> JSTable {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schema::SchemaType;
+    use crate::schema::{InstanceType, SingleOrVec};
     use serde_json::json;
     use tempfile::tempdir;
     use xorf::Filter;
 
+    fn get_types(schema: &Schema) -> Vec<InstanceType> {
+        match &schema.instance_type {
+            Some(SingleOrVec::Single(t)) => vec![t.clone()],
+            Some(SingleOrVec::Vec(v)) => v.clone(),
+            None => vec![],
+        }
+    }
+
     #[test]
     fn test_read_jstable() -> Result<(), Box<dyn std::error::Error>> {
-        let schema = Schema {
-            types: vec![SchemaType::Object],
-            properties: Some(BTreeMap::from([(
-                "a".to_string(),
-                Schema::new(SchemaType::Integer),
-            )])),
-            items: None,
-        };
+        let mut schema = Schema::new(InstanceType::Object);
+        schema.properties = Some(BTreeMap::from([(
+            "a".to_string(),
+            Schema::new(InstanceType::Integer),
+        )]));
         let mut documents = BTreeMap::new();
         documents.insert("id1".to_string(), json!({"a": 1}));
         documents.insert("id2".to_string(), json!({"a": 2}));
@@ -361,7 +366,7 @@ mod tests {
 
         assert_eq!(read_table.timestamp, 12345);
         assert_eq!(read_table.collection, "test_col");
-        assert_eq!(read_table.schema.types, vec![SchemaType::Object]);
+        assert_eq!(get_types(&read_table.schema), vec![InstanceType::Object]);
         assert_eq!(read_table.documents.len(), 2);
         assert_eq!(*read_table.documents.get("id1").unwrap(), json!({"a": 1}));
         assert_eq!(*read_table.documents.get("id2").unwrap(), json!({"a": 2}));
@@ -370,14 +375,11 @@ mod tests {
 
     #[test]
     fn test_jstable_iterator() -> Result<(), Box<dyn std::error::Error>> {
-        let schema = Schema {
-            types: vec![SchemaType::Object],
-            properties: Some(BTreeMap::from([(
-                "a".to_string(),
-                Schema::new(SchemaType::Integer),
-            )])),
-            items: None,
-        };
+        let mut schema = Schema::new(InstanceType::Object);
+        schema.properties = Some(BTreeMap::from([(
+            "a".to_string(),
+            Schema::new(InstanceType::Integer),
+        )]));
         let mut documents = BTreeMap::new();
         documents.insert("id1".to_string(), json!({"a": 1}));
         documents.insert("id2".to_string(), json!({"a": 2}));
@@ -413,14 +415,11 @@ mod tests {
 
     #[test]
     fn test_read_filter() -> Result<(), Box<dyn std::error::Error>> {
-        let schema = Schema {
-            types: vec![SchemaType::Object],
-            properties: Some(BTreeMap::from([(
-                "a".to_string(),
-                Schema::new(SchemaType::Integer),
-            )])),
-            items: None,
-        };
+        let mut schema = Schema::new(InstanceType::Object);
+        schema.properties = Some(BTreeMap::from([(
+            "a".to_string(),
+            Schema::new(InstanceType::Integer),
+        )]));
         let mut documents = BTreeMap::new();
         documents.insert("id1".to_string(), json!({"a": 1}));
         documents.insert("id2".to_string(), json!({"a": 2}));
@@ -454,7 +453,7 @@ mod tests {
 
     #[test]
     fn test_merge_jstables_conflict_resolution() {
-        let schema = Schema::new(SchemaType::Object);
+        let schema = Schema::new(InstanceType::Object);
 
         let mut docs1 = BTreeMap::new();
         docs1.insert("id1".to_string(), json!({"v": 1}));
@@ -489,7 +488,7 @@ mod tests {
 
     #[test]
     fn test_jstable_keys_sorted_on_disk() -> Result<(), Box<dyn std::error::Error>> {
-        let schema = Schema::new(SchemaType::Object);
+        let schema = Schema::new(InstanceType::Object);
         let mut documents = BTreeMap::new();
         // Insert keys in non-sorted order (BTreeMap will sort them)
         documents.insert("c".to_string(), json!(3));
@@ -511,7 +510,7 @@ mod tests {
 
     #[test]
     fn test_read_index() -> Result<(), Box<dyn std::error::Error>> {
-        let schema = Schema::new(SchemaType::Object);
+        let schema = Schema::new(InstanceType::Object);
         let mut documents = BTreeMap::new();
         // Insert enough data to trigger indexing (threshold 1024 bytes)
         // Each entry: 4 bytes length + record bytes

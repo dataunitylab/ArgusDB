@@ -14,7 +14,7 @@ Example document:
 
 Example schema:
 
-    {"type": "object", "properties": {"a": {"type": ["integer"]}, "b": {"type": ["string"]}}}
+    {"type": "object", "properties": {"a": {"type": "integer"}, "b": {"type": "string"}}}
 
 # Multi-document discovery
 
@@ -27,12 +27,12 @@ When performing LSM compaction, the schemas for each JSTable are merged accordin
 
 Example schema one:
 
-    {"type": "object", "properties": {"a": {"type": ["integer"]}, "b": {"type": ["string"]}}}
+    {"type": "object", "properties": {"a": {"type": "integer"}, "b": {"type": "string"}}}
 
 Example schema two:
 
-    {"type": "object", "properties": {"b": {"type": ["integer"]}, "c": {"type": ["string"]}}}
+    {"type": "object", "properties": {"b": {"type": "integer"}, "c": {"type": "string"}}}
 
 Example merged schema:
 
-    {"type": "object", "properties": {"a": {"type": ["integer"]}, "b": {"type": ["string, integer"]}, "c": {"type": ["string"]}}}
+    {"type": "object", "properties": {"a": {"type": "integer"}, "b": {"type": ["string", "integer"]}, "c": {"type": "string"}}}
