@@ -120,7 +120,7 @@ OFFSET 5
 #### Functions
 
 There are a number of predefined functions that can be used in the `SELECT` clause.
-Each of these takes either a field name or a JSONPath expression as an argument.
+Each parameter can be either a constant, field name, or a JSONPath expression.
 
 - `RAND()`: Returns a random number between 0 and 1
 

@@ -739,4 +739,25 @@ mod tests {
         assert_eq!(eval(ScalarFunction::Abs, "str_val"), Value::Null);
         assert_eq!(eval(ScalarFunction::Abs, "missing"), Value::Null);
     }
+
+    #[test]
+    fn test_functions_with_constants() {
+        let doc = json!({});
+
+        // ABS(-10)
+        let expr = Expression::Function {
+            func: ScalarFunction::Abs,
+            args: vec![Expression::Literal(json!(-10))],
+        };
+        let result = evaluate_expression(&expr, &doc);
+        assert_eq!(result, json!(10.0)); // json!(-10) is i64, result is f64 (10.0)
+
+        // POW(2, 3)
+        let expr = Expression::Function {
+            func: ScalarFunction::Pow,
+            args: vec![Expression::Literal(json!(2)), Expression::Literal(json!(3))],
+        };
+        let result = evaluate_expression(&expr, &doc);
+        assert_eq!(result, json!(8.0));
+    }
 }
