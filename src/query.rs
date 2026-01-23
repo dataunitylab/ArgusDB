@@ -514,30 +514,74 @@ mod tests {
 
     #[test]
     fn test_functions() {
-        let doc = json!({"a": -10.5, "b": 100});
+        let doc = json!({
+            "neg": -10.5,
+            "pos": 100,
+            "val": 0.5,
+            "one": 1.0,
+            "zero": 0.0,
+            "e": std::f64::consts::E,
+            "pi_half": std::f64::consts::FRAC_PI_2,
+            "nan_trigger": -1.0,
+            "null_val": null,
+            "str_val": "not a number"
+        });
 
-        // ABS(a)
-        let expr = Expression::Function {
-            func: ScalarFunction::Abs,
-            arg: Box::new(Expression::FieldReference("a".to_string())),
+        // Helper to evaluate function on a field
+        let eval = |func: ScalarFunction, field: &str| {
+            let expr = Expression::Function {
+                func,
+                arg: Box::new(Expression::FieldReference(field.to_string())),
+            };
+            evaluate_expression(&expr, &doc)
         };
-        let result = evaluate_expression(&expr, &doc);
-        assert_eq!(result, json!(10.5));
 
-        // SQRT(b)
-        let expr = Expression::Function {
-            func: ScalarFunction::Sqrt,
-            arg: Box::new(Expression::FieldReference("b".to_string())),
-        };
-        let result = evaluate_expression(&expr, &doc);
-        assert_eq!(result, json!(10.0));
+        // ABS
+        assert_eq!(eval(ScalarFunction::Abs, "neg"), json!(10.5));
 
-        // CEIL(a)
-        let expr = Expression::Function {
-            func: ScalarFunction::Ceil,
-            arg: Box::new(Expression::FieldReference("a".to_string())),
-        };
-        let result = evaluate_expression(&expr, &doc);
-        assert_eq!(result, json!(-10.0));
+        // CEIL
+        assert_eq!(eval(ScalarFunction::Ceil, "neg"), json!(-10.0));
+        assert_eq!(eval(ScalarFunction::Ceil, "val"), json!(1.0));
+
+        // FLOOR
+        assert_eq!(eval(ScalarFunction::Floor, "neg"), json!(-11.0));
+        assert_eq!(eval(ScalarFunction::Floor, "val"), json!(0.0));
+
+        // SQRT
+        assert_eq!(eval(ScalarFunction::Sqrt, "pos"), json!(10.0));
+        assert_eq!(eval(ScalarFunction::Sqrt, "nan_trigger"), Value::Null);
+
+        // LN
+        let ln_e = eval(ScalarFunction::Ln, "e").as_f64().unwrap();
+        assert!((ln_e - 1.0).abs() < 1e-10);
+        assert_eq!(eval(ScalarFunction::Ln, "nan_trigger"), Value::Null);
+
+        // SIN
+        let sin_val = eval(ScalarFunction::Sin, "pi_half").as_f64().unwrap();
+        assert!((sin_val - 1.0).abs() < 1e-10);
+
+        // COS -> ACOS
+        // ACOS(0.5)
+        let acos_val = eval(ScalarFunction::Acos, "val").as_f64().unwrap();
+        assert!((acos_val - 0.5f64.acos()).abs() < 1e-10);
+        // ACOS(2.0) -> NaN -> Null (using pos=100)
+        assert_eq!(eval(ScalarFunction::Acos, "pos"), Value::Null);
+
+        // ASIN
+        let asin_val = eval(ScalarFunction::Asin, "val").as_f64().unwrap();
+        assert!((asin_val - 0.5f64.asin()).abs() < 1e-10);
+
+        // ATAN
+        let atan_val = eval(ScalarFunction::Atan, "one").as_f64().unwrap();
+        assert!((atan_val - 1.0f64.atan()).abs() < 1e-10);
+
+        // TAN
+        let tan_val = eval(ScalarFunction::Tan, "zero").as_f64().unwrap();
+        assert!((tan_val - 0.0).abs() < 1e-10);
+
+        // Edge cases
+        assert_eq!(eval(ScalarFunction::Abs, "null_val"), Value::Null);
+        assert_eq!(eval(ScalarFunction::Abs, "str_val"), Value::Null);
+        assert_eq!(eval(ScalarFunction::Abs, "missing"), Value::Null);
     }
 }
