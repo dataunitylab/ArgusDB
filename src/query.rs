@@ -1,5 +1,6 @@
 use crate::db::DB;
 use jsonpath_rust::query::js_path_vals;
+use rand::{Rng, SeedableRng};
 use serde_json::Value;
 use std::cmp::Ordering;
 
@@ -22,7 +23,7 @@ pub enum Expression {
     },
     Function {
         func: ScalarFunction,
-        arg: Box<Expression>,
+        args: Vec<Expression>,
     },
 }
 
@@ -46,14 +47,28 @@ pub enum LogicalOperator {
 pub enum ScalarFunction {
     Abs,
     Acos,
+    Acosh,
     Asin,
     Atan,
+    Atan2,
     Ceil,
+    Cos,
+    Cosh,
+    Div,
+    Exp,
     Floor,
     Ln,
+    Log,
+    Log10,
+    Pow,
+    Rand,
+    Round,
+    Sign,
     Sin,
-    Tan,
+    Sinh,
     Sqrt,
+    Tan,
+    Tanh,
 }
 
 #[derive(Debug, Clone)]
@@ -265,46 +280,139 @@ fn evaluate_expression(expr: &Expression, doc: &Value) -> Value {
             let r_val = evaluate_expression(right, doc);
             evaluate_logical(&l_val, op, &r_val)
         }
-        Expression::Function { func, arg } => {
-            let val = evaluate_expression(arg, doc);
-            evaluate_function(func, &val)
+        Expression::Function { func, args } => {
+            let vals: Vec<Value> = args
+                .iter()
+                .map(|arg| evaluate_expression(arg, doc))
+                .collect();
+            evaluate_function(func, &vals)
         }
     }
 }
 
-fn evaluate_function(func: &ScalarFunction, val: &Value) -> Value {
-    let f = match val {
-        Value::Number(n) => {
-            if let Some(f) = n.as_f64() {
-                f
-            } else if let Some(i) = n.as_i64() {
-                i as f64
-            } else {
-                return Value::Null;
+fn evaluate_function(func: &ScalarFunction, vals: &[Value]) -> Value {
+    let get_f64 = |v: &Value| -> Option<f64> {
+        match v {
+            Value::Number(n) => {
+                if let Some(f) = n.as_f64() {
+                    Some(f)
+                } else {
+                    n.as_i64().map(|i| i as f64)
+                }
             }
+            _ => None,
         }
-        _ => return Value::Null,
+    };
+
+    let f1 = if !vals.is_empty() {
+        get_f64(&vals[0])
+    } else {
+        None
     };
 
     let result = match func {
-        ScalarFunction::Abs => f.abs(),
-        ScalarFunction::Acos => f.acos(),
-        ScalarFunction::Asin => f.asin(),
-        ScalarFunction::Atan => f.atan(),
-        ScalarFunction::Ceil => f.ceil(),
-        ScalarFunction::Floor => f.floor(),
-        ScalarFunction::Ln => f.ln(),
-        ScalarFunction::Sin => f.sin(),
-        ScalarFunction::Tan => f.tan(),
-        ScalarFunction::Sqrt => f.sqrt(),
+        // Unary
+        ScalarFunction::Abs => f1.map(|f| f.abs()),
+        ScalarFunction::Acos => f1.map(|f| f.acos()),
+        ScalarFunction::Acosh => f1.map(|f| f.acosh()),
+        ScalarFunction::Asin => f1.map(|f| f.asin()),
+        ScalarFunction::Atan => f1.map(|f| f.atan()),
+        ScalarFunction::Ceil => f1.map(|f| f.ceil()),
+        ScalarFunction::Cos => f1.map(|f| f.cos()),
+        ScalarFunction::Cosh => f1.map(|f| f.cosh()),
+        ScalarFunction::Exp => f1.map(|f| f.exp()),
+        ScalarFunction::Floor => f1.map(|f| f.floor()),
+        ScalarFunction::Ln => f1.map(|f| f.ln()),
+        ScalarFunction::Log10 => f1.map(|f| f.log10()),
+        ScalarFunction::Sin => f1.map(|f| f.sin()),
+        ScalarFunction::Sinh => f1.map(|f| f.sinh()),
+        ScalarFunction::Sqrt => f1.map(|f| f.sqrt()),
+        ScalarFunction::Tan => f1.map(|f| f.tan()),
+        ScalarFunction::Tanh => f1.map(|f| f.tanh()),
+        ScalarFunction::Sign => f1.map(|f| if f == 0.0 { 0.0 } else { f.signum() }),
+        ScalarFunction::Rand => {
+            let seed = f1.unwrap_or(0.0) as u64;
+            let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+            Some(rng.random::<f64>())
+        }
+
+        // Binary / Variable
+        ScalarFunction::Atan2 => {
+            let f2 = if vals.len() > 1 {
+                get_f64(&vals[1])
+            } else {
+                None
+            };
+            match (f1, f2) {
+                (Some(x), Some(y)) => Some(y.atan2(x)),
+                _ => None,
+            }
+        }
+        ScalarFunction::Div => {
+            let f2 = if vals.len() > 1 {
+                get_f64(&vals[1])
+            } else {
+                None
+            };
+            match (f1, f2) {
+                (Some(x), Some(y)) => {
+                    if y == 0.0 {
+                        None
+                    } else {
+                        Some((x / y).trunc())
+                    }
+                }
+                _ => None,
+            }
+        }
+        ScalarFunction::Log => match f1 {
+            Some(x) => {
+                if vals.len() > 1 {
+                    match get_f64(&vals[1]) {
+                        Some(y) => Some(x.log(y)),
+                        None => None,
+                    }
+                } else {
+                    Some(x.ln())
+                }
+            }
+            None => None,
+        },
+        ScalarFunction::Pow => {
+            let f2 = if vals.len() > 1 {
+                get_f64(&vals[1])
+            } else {
+                None
+            };
+            match (f1, f2) {
+                (Some(x), Some(y)) => Some(x.powf(y)),
+                _ => None,
+            }
+        }
+        ScalarFunction::Round => match f1 {
+            Some(x) => {
+                let decimals = if vals.len() > 1 {
+                    get_f64(&vals[1]).unwrap_or(0.0) as i32
+                } else {
+                    0
+                };
+                let factor = 10.0f64.powi(decimals);
+                Some((x * factor).round() / factor)
+            }
+            None => None,
+        },
     };
 
-    if result.is_nan() || result.is_infinite() {
-        Value::Null
+    if let Some(res) = result {
+        if res.is_nan() || res.is_infinite() {
+            Value::Null
+        } else {
+            serde_json::Number::from_f64(res)
+                .map(Value::Number)
+                .unwrap_or(Value::Null)
+        }
     } else {
-        serde_json::Number::from_f64(result)
-            .map(Value::Number)
-            .unwrap_or(Value::Null)
+        Value::Null
     }
 }
 
@@ -520,6 +628,7 @@ mod tests {
             "val": 0.5,
             "one": 1.0,
             "zero": 0.0,
+            "two": 2.0,
             "e": std::f64::consts::E,
             "pi_half": std::f64::consts::FRAC_PI_2,
             "nan_trigger": -1.0,
@@ -527,14 +636,18 @@ mod tests {
             "str_val": "not a number"
         });
 
-        // Helper to evaluate function on a field
-        let eval = |func: ScalarFunction, field: &str| {
-            let expr = Expression::Function {
-                func,
-                arg: Box::new(Expression::FieldReference(field.to_string())),
-            };
+        // Helper to evaluate function on a list of fields
+        let eval_args = |func: ScalarFunction, fields: Vec<&str>| {
+            let args = fields
+                .iter()
+                .map(|f| Expression::FieldReference(f.to_string()))
+                .collect();
+            let expr = Expression::Function { func, args };
             evaluate_expression(&expr, &doc)
         };
+
+        // Helper for unary
+        let eval = |func: ScalarFunction, field: &str| eval_args(func, vec![field]);
 
         // ABS
         assert_eq!(eval(ScalarFunction::Abs, "neg"), json!(10.5));
@@ -578,6 +691,53 @@ mod tests {
         // TAN
         let tan_val = eval(ScalarFunction::Tan, "zero").as_f64().unwrap();
         assert!((tan_val - 0.0).abs() < 1e-10);
+
+        // SIGN
+        assert_eq!(eval(ScalarFunction::Sign, "neg"), json!(-1.0));
+        assert_eq!(eval(ScalarFunction::Sign, "pos"), json!(1.0));
+        assert_eq!(eval(ScalarFunction::Sign, "zero"), json!(0.0));
+
+        // EXP
+        let exp_one = eval(ScalarFunction::Exp, "one").as_f64().unwrap();
+        assert!((exp_one - std::f64::consts::E).abs() < 1e-10);
+
+        // LOG10
+        assert_eq!(eval(ScalarFunction::Log10, "pos"), json!(2.0));
+
+        // Binary Functions
+
+        // DIV(100, 2) = 50
+        assert_eq!(
+            eval_args(ScalarFunction::Div, vec!["pos", "two"]),
+            json!(50.0)
+        );
+
+        // POW(100, 0.5) = 10
+        assert_eq!(
+            eval_args(ScalarFunction::Pow, vec!["pos", "val"]),
+            json!(10.0)
+        );
+
+        // ATAN2(1, 1) -> pi/4
+        // ATAN2(x, y) = atan(y/x).
+        // args: [one, one]. atan(1/1) = atan(1) = pi/4
+        let atan2_val = eval_args(ScalarFunction::Atan2, vec!["one", "one"])
+            .as_f64()
+            .unwrap();
+        assert!((atan2_val - std::f64::consts::FRAC_PI_4).abs() < 1e-10);
+
+        // ROUND
+        // ROUND(0.5) -> 1.0
+        assert_eq!(eval(ScalarFunction::Round, "val"), json!(1.0));
+        // ROUND(10.5) -> 11
+        // ROUND(-10.5) -> -11
+        assert_eq!(eval(ScalarFunction::Round, "neg"), json!(-11.0));
+
+        // RAND(0) -> deterministic
+        let r1 = eval(ScalarFunction::Rand, "zero");
+        let r2 = eval(ScalarFunction::Rand, "zero");
+        assert_eq!(r1, r2);
+        assert!(r1.is_number());
 
         // Edge cases
         assert_eq!(eval(ScalarFunction::Abs, "null_val"), Value::Null);

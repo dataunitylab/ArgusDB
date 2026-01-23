@@ -125,11 +125,27 @@ Each of these takes either a field name or a JSONPath expression as an argument.
 ##### Unary Functions
 - `ABS(x)`: Returns the absolute value of `x`
 - `ACOS(x)`: Returns the arc cosine of `x` in radians
+- `ACOSH(x)`: Returns the hyperbolic arc cosine of `x`
 - `ASIN(x)`: Returns the arc sine of `x` in radians
 - `ATAN(x)`: Returns the arc tangent of `x` in radians
 - `CEIL(x)`: Returns the ceiling of `x`
+- `COS(x)`: Returns the cosine of `x` in radians
+- `COSH(x)`: Returns the hyperbolic cosine of `x`
+- `EXP(x)`: Returns e raised to the power of `x`
 - `FLOOR(x)`: Returns the floor of `x`
 - `LN(x)`: Returns the natural logarithm of `x`
+- `RAND(x)`: Returns a random number between 0 and 1
 - `SIN(x)`: Returns the sine of `x` in radians
+- `SINH(x)`: Returns the hyperbolic sine of `x`
 - `TAN(x)`: Returns the tangent of `x` in radians
+- `TANH(x)`: Returns the hyperbolic tangent of `x`
+- `SIGN(x)`: Returns the sign of `x`
 - `SQRT(x)`: Returns the square root of `x`
+
+##### Binary Functions
+- `ATAN2(x, y)`: Returns the arc tangent of `y/x` in radians
+- `DIV(x, y)`: Returns the integer quotient of `x/y`
+- `LOG(x, y)`: Returns the logarithm of `x` with base `y` (`y` is optional and defaults to e)
+- `LOG10(x)`: Returns the base-10 logarithm of `x`
+- `ROUND(x, y)`: Rounds `x` to `y` decimal places (`y` is optional and defaults to 0)
+- `POW(x, y)`: Returns `x` raised to the power of `y`

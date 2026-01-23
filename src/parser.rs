@@ -283,36 +283,70 @@ fn convert_expr(expr: &Expr) -> Result<Expression, String> {
             let scalar_func = match name.as_str() {
                 "ABS" => ScalarFunction::Abs,
                 "ACOS" => ScalarFunction::Acos,
+                "ACOSH" => ScalarFunction::Acosh,
                 "ASIN" => ScalarFunction::Asin,
                 "ATAN" => ScalarFunction::Atan,
+                "ATAN2" => ScalarFunction::Atan2,
                 "CEIL" => ScalarFunction::Ceil,
+                "COS" => ScalarFunction::Cos,
+                "COSH" => ScalarFunction::Cosh,
+                "DIV" => ScalarFunction::Div,
+                "EXP" => ScalarFunction::Exp,
                 "FLOOR" => ScalarFunction::Floor,
                 "LN" => ScalarFunction::Ln,
+                "LOG" => ScalarFunction::Log,
+                "LOG10" => ScalarFunction::Log10,
+                "POW" => ScalarFunction::Pow,
+                "RAND" => ScalarFunction::Rand,
+                "ROUND" => ScalarFunction::Round,
+                "SIGN" => ScalarFunction::Sign,
                 "SIN" => ScalarFunction::Sin,
-                "TAN" => ScalarFunction::Tan,
+                "SINH" => ScalarFunction::Sinh,
                 "SQRT" => ScalarFunction::Sqrt,
+                "TAN" => ScalarFunction::Tan,
+                "TANH" => ScalarFunction::Tanh,
                 _ => return Err(format!("Unsupported function: {}", name)),
             };
 
-            let args = match &func.args {
+            let args_list = match &func.args {
                 sqlparser::ast::FunctionArguments::List(list) => &list.args,
                 _ => return Err(format!("Function {} expects arguments", name)),
             };
 
-            if args.len() != 1 {
-                return Err(format!("Function {} requires exactly one argument", name));
+            // Check arity
+            match scalar_func {
+                ScalarFunction::Log | ScalarFunction::Round => {
+                    if args_list.is_empty() || args_list.len() > 2 {
+                        return Err(format!("Function {} requires 1 or 2 arguments", name));
+                    }
+                }
+                ScalarFunction::Atan2 | ScalarFunction::Div | ScalarFunction::Pow => {
+                    if args_list.len() != 2 {
+                        return Err(format!("Function {} requires exactly 2 arguments", name));
+                    }
+                }
+                _ => {
+                    if args_list.len() != 1 {
+                        return Err(format!("Function {} requires exactly 1 argument", name));
+                    }
+                }
             }
 
-            let arg_expr = match &args[0] {
-                sqlparser::ast::FunctionArg::Unnamed(sqlparser::ast::FunctionArgExpr::Expr(e)) => {
-                    convert_expr(e)?
+            let mut expr_args = Vec::new();
+            for arg in args_list {
+                match arg {
+                    sqlparser::ast::FunctionArg::Unnamed(
+                        sqlparser::ast::FunctionArgExpr::Expr(e),
+                    ) => {
+                        expr_args.push(convert_expr(e)?);
+                    }
+                    _ => return Err(format!("Unsupported argument type for function {}", name)),
                 }
-                _ => return Err(format!("Unsupported argument type for function {}", name)),
-            };
+            }
 
             Ok(Expression::Function {
                 func: scalar_func,
-                arg: Box::new(arg_expr),
+                args: expr_args,
             })
         }
         Expr::JsonAccess { .. } => Err("JsonAccess not implemented".to_string()),
@@ -452,10 +486,11 @@ mod tests {
             Statement::Select(LogicalPlan::Project { projections, .. }) => {
                 assert_eq!(projections.len(), 2);
                 match &projections[0] {
-                    Expression::Function { func, arg } => {
+                    Expression::Function { func, args } => {
                         assert_eq!(*func, ScalarFunction::Abs);
-                        match **arg {
-                            Expression::FieldReference(ref s) => assert_eq!(s, "age"),
+                        assert_eq!(args.len(), 1);
+                        match &args[0] {
+                            Expression::FieldReference(s) => assert_eq!(s, "age"),
                             _ => panic!("Expected FieldReference"),
                         }
                     }
