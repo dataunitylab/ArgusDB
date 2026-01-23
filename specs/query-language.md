@@ -122,6 +122,8 @@ OFFSET 5
 There are a number of predefined functions that can be used in the `SELECT` clause.
 Each of these takes either a field name or a JSONPath expression as an argument.
 
+- `RAND()`: Returns a random number between 0 and 1
+
 ##### Unary Functions
 - `ABS(x)`: Returns the absolute value of `x`
 - `ACOS(x)`: Returns the arc cosine of `x` in radians
@@ -134,7 +136,6 @@ Each of these takes either a field name or a JSONPath expression as an argument.
 - `EXP(x)`: Returns e raised to the power of `x`
 - `FLOOR(x)`: Returns the floor of `x`
 - `LN(x)`: Returns the natural logarithm of `x`
-- `RAND(x)`: Returns a random number between 0 and 1
 - `SIN(x)`: Returns the sine of `x` in radians
 - `SINH(x)`: Returns the hyperbolic sine of `x`
 - `TAN(x)`: Returns the tangent of `x` in radians

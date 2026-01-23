@@ -1,6 +1,5 @@
 use crate::db::DB;
 use jsonpath_rust::query::js_path_vals;
-use rand::{Rng, SeedableRng};
 use serde_json::Value;
 use std::cmp::Ordering;
 
@@ -330,11 +329,7 @@ fn evaluate_function(func: &ScalarFunction, vals: &[Value]) -> Value {
         ScalarFunction::Tan => f1.map(|f| f.tan()),
         ScalarFunction::Tanh => f1.map(|f| f.tanh()),
         ScalarFunction::Sign => f1.map(|f| if f == 0.0 { 0.0 } else { f.signum() }),
-        ScalarFunction::Rand => {
-            let seed = f1.unwrap_or(0.0) as u64;
-            let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
-            Some(rng.random::<f64>())
-        }
+        ScalarFunction::Rand => Some(rand::random::<f64>()),
 
         // Binary / Variable
         ScalarFunction::Atan2 => {
@@ -733,11 +728,11 @@ mod tests {
         // ROUND(-10.5) -> -11
         assert_eq!(eval(ScalarFunction::Round, "neg"), json!(-11.0));
 
-        // RAND(0) -> deterministic
-        let r1 = eval(ScalarFunction::Rand, "zero");
-        let r2 = eval(ScalarFunction::Rand, "zero");
-        assert_eq!(r1, r2);
+        // RAND() -> non-deterministic
+        let r1 = eval_args(ScalarFunction::Rand, vec![]);
         assert!(r1.is_number());
+        let val = r1.as_f64().unwrap();
+        assert!(val >= 0.0 && val < 1.0);
 
         // Edge cases
         assert_eq!(eval(ScalarFunction::Abs, "null_val"), Value::Null);

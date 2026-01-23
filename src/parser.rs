@@ -315,6 +315,11 @@ fn convert_expr(expr: &Expr) -> Result<Expression, String> {
 
             // Check arity
             match scalar_func {
+                ScalarFunction::Rand => {
+                    if !args_list.is_empty() {
+                        return Err(format!("Function {} requires 0 arguments", name));
+                    }
+                }
                 ScalarFunction::Log | ScalarFunction::Round => {
                     if args_list.is_empty() || args_list.len() > 2 {
                         return Err(format!("Function {} requires 1 or 2 arguments", name));
