@@ -117,3 +117,19 @@ WHERE `$.age` >= 21 AND active = TRUE
 LIMIT 10
 OFFSET 5
 ```
+#### Functions
+
+There are a number of predefined functions that can be used in the `SELECT` clause.
+Each of these takes either a field name or a JSONPath expression as an argument.
+
+##### Unary Functions
+- `ABS(x)`: Returns the absolute value of `x`
+- `ACOS(x)`: Returns the arc cosine of `x` in radians
+- `ASIN(x)`: Returns the arc sine of `x` in radians
+- `ATAN(x)`: Returns the arc tangent of `x` in radians
+- `CEIL(x)`: Returns the ceiling of `x`
+- `FLOOR(x)`: Returns the floor of `x`
+- `LN(x)`: Returns the natural logarithm of `x`
+- `SIN(x)`: Returns the sine of `x` in radians
+- `TAN(x)`: Returns the tangent of `x` in radians
+- `SQRT(x)`: Returns the square root of `x`

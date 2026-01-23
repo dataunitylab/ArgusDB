@@ -20,6 +20,10 @@ pub enum Expression {
         op: LogicalOperator,
         right: Box<Expression>,
     },
+    Function {
+        func: ScalarFunction,
+        arg: Box<Expression>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -36,6 +40,20 @@ pub enum BinaryOperator {
 pub enum LogicalOperator {
     And,
     Or,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ScalarFunction {
+    Abs,
+    Acos,
+    Asin,
+    Atan,
+    Ceil,
+    Floor,
+    Ln,
+    Sin,
+    Tan,
+    Sqrt,
 }
 
 #[derive(Debug, Clone)]
@@ -247,6 +265,46 @@ fn evaluate_expression(expr: &Expression, doc: &Value) -> Value {
             let r_val = evaluate_expression(right, doc);
             evaluate_logical(&l_val, op, &r_val)
         }
+        Expression::Function { func, arg } => {
+            let val = evaluate_expression(arg, doc);
+            evaluate_function(func, &val)
+        }
+    }
+}
+
+fn evaluate_function(func: &ScalarFunction, val: &Value) -> Value {
+    let f = match val {
+        Value::Number(n) => {
+            if let Some(f) = n.as_f64() {
+                f
+            } else if let Some(i) = n.as_i64() {
+                i as f64
+            } else {
+                return Value::Null;
+            }
+        }
+        _ => return Value::Null,
+    };
+
+    let result = match func {
+        ScalarFunction::Abs => f.abs(),
+        ScalarFunction::Acos => f.acos(),
+        ScalarFunction::Asin => f.asin(),
+        ScalarFunction::Atan => f.atan(),
+        ScalarFunction::Ceil => f.ceil(),
+        ScalarFunction::Floor => f.floor(),
+        ScalarFunction::Ln => f.ln(),
+        ScalarFunction::Sin => f.sin(),
+        ScalarFunction::Tan => f.tan(),
+        ScalarFunction::Sqrt => f.sqrt(),
+    };
+
+    if result.is_nan() || result.is_infinite() {
+        Value::Null
+    } else {
+        serde_json::Number::from_f64(result)
+            .map(Value::Number)
+            .unwrap_or(Value::Null)
     }
 }
 
@@ -452,5 +510,34 @@ mod tests {
         assert_eq!(limit_op.next().unwrap().0, "2");
         assert_eq!(limit_op.next().unwrap().0, "3");
         assert!(limit_op.next().is_none());
+    }
+
+    #[test]
+    fn test_functions() {
+        let doc = json!({"a": -10.5, "b": 100});
+
+        // ABS(a)
+        let expr = Expression::Function {
+            func: ScalarFunction::Abs,
+            arg: Box::new(Expression::FieldReference("a".to_string())),
+        };
+        let result = evaluate_expression(&expr, &doc);
+        assert_eq!(result, json!(10.5));
+
+        // SQRT(b)
+        let expr = Expression::Function {
+            func: ScalarFunction::Sqrt,
+            arg: Box::new(Expression::FieldReference("b".to_string())),
+        };
+        let result = evaluate_expression(&expr, &doc);
+        assert_eq!(result, json!(10.0));
+
+        // CEIL(a)
+        let expr = Expression::Function {
+            func: ScalarFunction::Ceil,
+            arg: Box::new(Expression::FieldReference("a".to_string())),
+        };
+        let result = evaluate_expression(&expr, &doc);
+        assert_eq!(result, json!(-10.0));
     }
 }

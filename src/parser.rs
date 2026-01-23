@@ -1,4 +1,6 @@
-use crate::query::{BinaryOperator, Expression, LogicalOperator, LogicalPlan, Statement};
+use crate::query::{
+    BinaryOperator, Expression, LogicalOperator, LogicalPlan, ScalarFunction, Statement,
+};
 use serde_json::Value;
 use sqlparser::ast::{
     self, BinaryOperator as SqlBinaryOperator, Expr, LimitClause, SetExpr, TableFactor, Values,
@@ -276,6 +278,43 @@ fn convert_expr(expr: &Expr) -> Result<Expression, String> {
                 })
             }
         }
+        Expr::Function(func) => {
+            let name = func.name.to_string().to_uppercase();
+            let scalar_func = match name.as_str() {
+                "ABS" => ScalarFunction::Abs,
+                "ACOS" => ScalarFunction::Acos,
+                "ASIN" => ScalarFunction::Asin,
+                "ATAN" => ScalarFunction::Atan,
+                "CEIL" => ScalarFunction::Ceil,
+                "FLOOR" => ScalarFunction::Floor,
+                "LN" => ScalarFunction::Ln,
+                "SIN" => ScalarFunction::Sin,
+                "TAN" => ScalarFunction::Tan,
+                "SQRT" => ScalarFunction::Sqrt,
+                _ => return Err(format!("Unsupported function: {}", name)),
+            };
+
+            let args = match &func.args {
+                sqlparser::ast::FunctionArguments::List(list) => &list.args,
+                _ => return Err(format!("Function {} expects arguments", name)),
+            };
+
+            if args.len() != 1 {
+                return Err(format!("Function {} requires exactly one argument", name));
+            }
+
+            let arg_expr = match &args[0] {
+                sqlparser::ast::FunctionArg::Unnamed(sqlparser::ast::FunctionArgExpr::Expr(e)) => {
+                    convert_expr(e)?
+                }
+                _ => return Err(format!("Unsupported argument type for function {}", name)),
+            };
+
+            Ok(Expression::Function {
+                func: scalar_func,
+                arg: Box::new(arg_expr),
+            })
+        }
         Expr::JsonAccess { .. } => Err("JsonAccess not implemented".to_string()),
         _ => Err(format!("Unsupported expression: {:?}", expr)),
     }
@@ -402,6 +441,28 @@ mod tests {
         match stmt {
             Statement::ShowCollections => {}
             _ => panic!("Expected ShowCollections"),
+        }
+    }
+
+    #[test]
+    fn test_parse_functions() {
+        let sql = "SELECT ABS(age), SQRT(height) FROM users";
+        let stmt = parse(sql).unwrap();
+        match stmt {
+            Statement::Select(LogicalPlan::Project { projections, .. }) => {
+                assert_eq!(projections.len(), 2);
+                match &projections[0] {
+                    Expression::Function { func, arg } => {
+                        assert_eq!(*func, ScalarFunction::Abs);
+                        match **arg {
+                            Expression::FieldReference(ref s) => assert_eq!(s, "age"),
+                            _ => panic!("Expected FieldReference"),
+                        }
+                    }
+                    _ => panic!("Expected Function"),
+                }
+            }
+            _ => panic!("Expected Select Project"),
         }
     }
 }
