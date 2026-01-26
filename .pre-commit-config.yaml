@@ -32,6 +32,7 @@ repos:
         stages: [pre-push]
       - id: test
         stages: [pre-push]
-      - id: build
+      - name: bench
+        id: build
         stages: [pre-push]
         args: ["--benches"]
