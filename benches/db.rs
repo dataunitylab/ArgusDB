@@ -28,7 +28,7 @@ fn generate_query_plan(collection_name: &str, selectivity: f64, total_docs: usiz
     let predicate = Expression::Binary {
         left: Box::new(Expression::FieldReference("value".to_string())),
         op: BinaryOperator::Lt,
-        right: Box::new(Expression::Literal(json!(filter_value))),
+        right: Box::new(Expression::Literal(json!(filter_value).into())),
     };
 
     LogicalPlan::Filter {
@@ -58,7 +58,7 @@ fn insertion_benchmark(c: &mut Criterion) {
                     // Benchmarked routine: Insert documents
                     for i in 0..(max_docs / num_keys) {
                         let doc = generate_doc_with_keys(*num_keys, i);
-                        db.insert("test", hint::black_box(doc)).unwrap();
+                        db.insert("test", hint::black_box(doc.into())).unwrap();
                     }
 
                     total_duration += start.elapsed();
@@ -95,7 +95,8 @@ fn query_benchmark(c: &mut Criterion) {
     let mut db = DB::new(dir.path().to_str().unwrap(), num_docs + 1, 10, 1024, None); // Don't flush
     db.create_collection(collection_name).unwrap();
     for i in 0..num_docs {
-        db.insert(collection_name, json!({"value": i})).unwrap();
+        db.insert(collection_name, json!({"value": i}).into())
+            .unwrap();
     }
     let db_arc = std::sync::Arc::new(std::sync::Mutex::new(db));
 

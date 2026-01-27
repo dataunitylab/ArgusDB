@@ -1,5 +1,6 @@
+use crate::Value;
 pub use jsonb_schema::schema::{InstanceType, Schema, SingleOrVec};
-use serde_json::Value;
+use jsonb_schema::{Number, Value as JsonbValue};
 use std::collections::BTreeMap;
 
 pub trait SchemaExt {
@@ -70,17 +71,15 @@ impl SchemaExt for Schema {
 
 pub fn infer_schema(doc: &Value) -> Schema {
     match doc {
-        Value::Null => Schema::new(InstanceType::Null),
-        Value::Bool(_) => Schema::new(InstanceType::Boolean),
-        Value::Number(n) => {
-            if n.is_i64() {
-                Schema::new(InstanceType::Integer)
-            } else {
-                Schema::new(InstanceType::Number)
-            }
-        }
-        Value::String(_) => Schema::new(InstanceType::String),
-        Value::Array(arr) => {
+        JsonbValue::Null => Schema::new(InstanceType::Null),
+        JsonbValue::Bool(_) => Schema::new(InstanceType::Boolean),
+        JsonbValue::Number(n) => match n {
+            Number::Int64(_) | Number::UInt64(_) => Schema::new(InstanceType::Integer),
+            Number::Float64(_) => Schema::new(InstanceType::Number),
+            _ => Schema::new(InstanceType::Number),
+        },
+        JsonbValue::String(_) => Schema::new(InstanceType::String),
+        JsonbValue::Array(arr) => {
             let mut items_schema = if let Some(first) = arr.first() {
                 infer_schema(first)
             } else {
@@ -95,7 +94,7 @@ pub fn infer_schema(doc: &Value) -> Schema {
             schema.items = Some(Box::new(items_schema));
             schema
         }
-        Value::Object(obj) => {
+        JsonbValue::Object(obj) => {
             let mut properties = BTreeMap::new();
             for (key, value) in obj {
                 properties.insert(key.clone(), infer_schema(value));
@@ -104,12 +103,14 @@ pub fn infer_schema(doc: &Value) -> Schema {
             schema.properties = Some(properties);
             schema
         }
+        _ => Schema::new(InstanceType::Null),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::serde_to_jsonb;
     use serde_json::json;
 
     fn get_types(schema: &Schema) -> Vec<InstanceType> {
@@ -122,10 +123,10 @@ mod tests {
 
     #[test]
     fn test_infer_simple_object() {
-        let doc = json!({
+        let doc = serde_to_jsonb(json!({
             "a": 1,
             "b": "hello"
-        });
+        }));
         let schema = infer_schema(&doc);
         assert_eq!(get_types(&schema), vec![InstanceType::Object]);
         let props = schema.properties.as_ref().unwrap();
@@ -141,11 +142,11 @@ mod tests {
 
     #[test]
     fn test_infer_nested_object() {
-        let doc = json!({
+        let doc = serde_to_jsonb(json!({
             "a": {
                 "b": true
             }
-        });
+        }));
         let schema = infer_schema(&doc);
         assert_eq!(get_types(&schema), vec![InstanceType::Object]);
         let props = schema.properties.as_ref().unwrap();
@@ -160,7 +161,7 @@ mod tests {
 
     #[test]
     fn test_infer_array() {
-        let doc = json!([1, 2, 3]);
+        let doc = serde_to_jsonb(json!([1, 2, 3]));
         let schema = infer_schema(&doc);
         assert_eq!(get_types(&schema), vec![InstanceType::Array]);
         let items = schema.items.as_ref().unwrap();
@@ -169,7 +170,7 @@ mod tests {
 
     #[test]
     fn test_infer_array_mixed_types() {
-        let doc = json!([1, "hello"]);
+        let doc = serde_to_jsonb(json!([1, "hello"]));
         let schema = infer_schema(&doc);
         assert_eq!(get_types(&schema), vec![InstanceType::Array]);
         let items = schema.items.as_ref().unwrap();
@@ -181,8 +182,8 @@ mod tests {
 
     #[test]
     fn test_merge_schemas() {
-        let mut schema1 = infer_schema(&json!({"a": 1, "b": "hello"}));
-        let schema2 = infer_schema(&json!({"b": 2, "c": "world"}));
+        let mut schema1 = infer_schema(&serde_to_jsonb(json!({"a": 1, "b": "hello"})));
+        let schema2 = infer_schema(&serde_to_jsonb(json!({"b": 2, "c": "world"})));
         schema1.merge(schema2);
 
         assert_eq!(get_types(&schema1), vec![InstanceType::Object]);
@@ -203,10 +204,10 @@ mod tests {
 
     #[test]
     fn test_infer_array_of_objects() {
-        let doc = json!([
+        let doc = serde_to_jsonb(json!([
             {"a": 1},
             {"b": "hello"}
-        ]);
+        ]));
         let schema = infer_schema(&doc);
         assert_eq!(get_types(&schema), vec![InstanceType::Array]);
         let items = schema.items.as_ref().unwrap();

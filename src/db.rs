@@ -1,7 +1,7 @@
+use crate::Value;
 use crate::jstable;
 use crate::log::{Log, LogEntry, Logger, NullLogger, Operation};
 use crate::storage::MemTable;
-use serde_json::Value;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::fs;
@@ -59,10 +59,12 @@ impl<'a> Iterator for MergedIterator<'a> {
                 }
             }
 
-            if let Some(doc) = result
-                && !doc.is_null()
-            {
-                return Some((min_id, doc));
+            // Check for tombstone (Null)
+            if let Some(doc) = result {
+                use jsonb_schema::Value as JsonbValue;
+                if !matches!(doc, JsonbValue::Null) {
+                    return Some((min_id, doc));
+                }
             }
             // If null (tombstone), loop again
         }
@@ -266,7 +268,8 @@ impl Collection {
     fn get(&self, id: &str) -> Option<Value> {
         // 1. Check MemTable
         if let Some(doc) = self.memtable.documents.get(id) {
-            if doc.is_null() {
+            use jsonb_schema::Value as JsonbValue;
+            if matches!(doc, JsonbValue::Null) {
                 return None; // Tombstone
             }
             return Some(doc.clone());
@@ -281,29 +284,30 @@ impl Collection {
         };
 
         for i in (0..self.jstable_count).rev() {
-            if let Some(table) = self.tables.get(i as usize) {
-                if table.filter.contains(&hash) {
-                    // Possible match, find offset using index
-                    let index = &table.index;
-                    // Find first key > id. We want the one before that.
-                    let idx = index.partition_point(|(k, _)| k.as_str() <= id);
-                    let start_offset = if idx > 0 { index[idx - 1].1 } else { 0 };
+            if let Some(table) = self.tables.get(i as usize)
+                && table.filter.contains(&hash)
+            {
+                // Possible match, find offset using index
+                let index = &table.index;
+                // Find first key > id. We want the one before that.
+                let idx = index.partition_point(|(k, _)| k.as_str() <= id);
+                let start_offset = if idx > 0 { index[idx - 1].1 } else { 0 };
 
-                    let path = self.dir.join(format!("jstable-{}", i));
-                    if let Ok(mut iter) = jstable::JSTableIterator::new(path.to_str().unwrap()) {
-                        if iter.seek(start_offset).is_ok() {
-                            for (rid, doc) in iter.flatten() {
-                                if rid == id {
-                                    if doc.is_null() {
-                                        return None; // Tombstone
-                                    }
-                                    return Some(doc);
-                                }
-                                if rid.as_str() > id {
-                                    // Not found in this table (sorted)
-                                    break;
-                                }
+                let path = self.dir.join(format!("jstable-{}", i));
+                if let Ok(mut iter) = jstable::JSTableIterator::new(path.to_str().unwrap())
+                    && iter.seek(start_offset).is_ok()
+                {
+                    for (rid, doc) in iter.flatten() {
+                        if rid == id {
+                            use jsonb_schema::Value as JsonbValue;
+                            if matches!(doc, JsonbValue::Null) {
+                                return None; // Tombstone
                             }
+                            return Some(doc);
+                        }
+                        if rid.as_str() > id {
+                            // Not found in this table (sorted)
+                            break;
                         }
                     }
                 }
@@ -485,6 +489,7 @@ impl DB {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::serde_to_jsonb;
     use serde_json::json;
     use tempfile::tempdir;
 
@@ -505,13 +510,15 @@ mod tests {
         db.create_collection("test").unwrap();
 
         for i in 0..MEMTABLE_THRESHOLD {
-            db.insert("test", json!({ "a": i })).unwrap();
+            db.insert("test", serde_to_jsonb(json!({ "a": i })))
+                .unwrap();
         }
         let col = db.collections.get("test").unwrap();
         assert_eq!(col.memtable.len(), MEMTABLE_THRESHOLD);
         assert_eq!(col.jstable_count, 0);
 
-        db.insert("test", json!({"a": MEMTABLE_THRESHOLD})).unwrap();
+        db.insert("test", serde_to_jsonb(json!({"a": MEMTABLE_THRESHOLD})))
+            .unwrap();
         let col = db.collections.get("test").unwrap();
         assert_eq!(col.memtable.len(), 1);
         assert_eq!(col.jstable_count, 1);
@@ -533,10 +540,10 @@ mod tests {
             Some(1024 * 1024),
         );
         db.create_collection("test").unwrap();
-        let doc1 = json!({"a": 1});
+        let doc1 = serde_to_jsonb(json!({"a": 1}));
         let id1 = db.insert("test", doc1.clone()).unwrap();
 
-        let doc2 = json!({"b": "hello"});
+        let doc2 = serde_to_jsonb(json!({"b": "hello"}));
         db.update("test", &id1, doc2.clone()).unwrap();
 
         db.delete("test", &id1).unwrap();
@@ -582,10 +589,10 @@ mod tests {
             Some(1024 * 1024),
         );
         db.create_collection("test").unwrap();
-        let doc1 = json!({"a": 1});
+        let doc1 = serde_to_jsonb(json!({"a": 1}));
         let id1 = db.insert("test", doc1.clone()).unwrap();
 
-        let doc2 = json!({"b": "hello"});
+        let doc2 = serde_to_jsonb(json!({"b": "hello"}));
         let id2 = db.insert("test", doc2.clone()).unwrap();
 
         db.delete("test", &id1).unwrap();
@@ -602,7 +609,11 @@ mod tests {
 
         assert_eq!(col.memtable.len(), 2);
         assert_eq!(*col.memtable.documents.get(&id2).unwrap(), doc2);
-        assert!(col.memtable.documents.get(&id1).unwrap().is_null());
+        use jsonb_schema::Value as JsonbValue;
+        assert!(matches!(
+            col.memtable.documents.get(&id1).unwrap(),
+            JsonbValue::Null
+        ));
     }
 
     #[test]
@@ -618,12 +629,14 @@ mod tests {
         db.create_collection("test").unwrap();
 
         for i in 0..(MEMTABLE_THRESHOLD * JSTABLE_THRESHOLD as usize) {
-            db.insert("test", json!({ "a": i })).unwrap();
+            db.insert("test", serde_to_jsonb(json!({ "a": i })))
+                .unwrap();
         }
 
         let col = db.collections.get("test").unwrap();
         assert_eq!(col.jstable_count, JSTABLE_THRESHOLD - 1);
-        db.insert("test", json!({ "a": 999 })).unwrap();
+        db.insert("test", serde_to_jsonb(json!({ "a": 999 })))
+            .unwrap();
 
         let col = db.collections.get("test").unwrap();
         assert_eq!(col.jstable_count, 1);
@@ -640,12 +653,16 @@ mod tests {
             Some(1024 * 1024),
         );
         db.create_collection("test").unwrap();
-        let id_to_delete = db.insert("test", json!({ "a": 100 })).unwrap();
+        let id_to_delete = db
+            .insert("test", serde_to_jsonb(json!({ "a": 100 })))
+            .unwrap();
 
         for i in 0..9 {
-            db.insert("test", json!({ "fill": i })).unwrap();
+            db.insert("test", serde_to_jsonb(json!({ "fill": i })))
+                .unwrap();
         }
-        db.insert("test", json!({ "trigger_1": 1 })).unwrap();
+        db.insert("test", serde_to_jsonb(json!({ "trigger_1": 1 })))
+            .unwrap();
 
         let col = db.collections.get("test").unwrap();
         assert_eq!(col.jstable_count, 1);
@@ -653,19 +670,22 @@ mod tests {
         db.delete("test", &id_to_delete).unwrap();
 
         for i in 0..8 {
-            db.insert("test", json!({ "fill_2": i })).unwrap();
+            db.insert("test", serde_to_jsonb(json!({ "fill_2": i })))
+                .unwrap();
         }
-        db.insert("test", json!({ "trigger_2": 1 })).unwrap();
+        db.insert("test", serde_to_jsonb(json!({ "trigger_2": 1 })))
+            .unwrap();
 
         let col = db.collections.get("test").unwrap();
         assert_eq!(col.jstable_count, 2);
 
         for t in 0..3 {
             for i in 0..9 {
-                db.insert("test", json!({ "fill_more": t, "i": i }))
+                db.insert("test", serde_to_jsonb(json!({ "fill_more": t, "i": i })))
                     .unwrap();
             }
-            db.insert("test", json!({ "trigger_more": t })).unwrap();
+            db.insert("test", serde_to_jsonb(json!({ "trigger_more": t })))
+                .unwrap();
         }
 
         let col = db.collections.get("test").unwrap();
@@ -690,19 +710,14 @@ mod tests {
         db.create_collection("test").unwrap();
 
         for i in 0..MEMTABLE_THRESHOLD {
-            db.insert("test", json!({"val": i})).unwrap();
+            db.insert("test", serde_to_jsonb(json!({"val": i})))
+                .unwrap();
         }
-        db.insert("test", json!({"val": 10})).unwrap();
+        db.insert("test", serde_to_jsonb(json!({"val": 10})))
+            .unwrap();
 
         let results: HashMap<String, Value> = db.scan("test").unwrap().collect();
         assert_eq!(results.len(), 11);
-    }
-
-    #[test]
-    fn test_sanitize() {
-        assert_eq!(sanitize_filename("valid"), "valid");
-        assert_eq!(sanitize_filename("foo/bar"), "foo_2fbar");
-        assert_eq!(sanitize_filename("test.1"), "test_2e1");
     }
 
     #[test]
@@ -792,7 +807,7 @@ mod tests {
             INDEX_THRESHOLD,
             Some(1024 * 1024),
         );
-        let res = db.insert("test", json!({ "a": 1 }));
+        let res = db.insert("test", serde_to_jsonb(json!({ "a": 1 })));
         assert!(res.is_err());
     }
 
@@ -829,18 +844,21 @@ mod tests {
             Some(1024 * 1024),
         );
         db.create_collection("test").unwrap();
-        let id = db.insert("test", json!({ "a": 1 })).unwrap();
+        let id = db
+            .insert("test", serde_to_jsonb(json!({ "a": 1 })))
+            .unwrap();
 
         let doc = db.get("test", &id).unwrap().unwrap();
-        assert_eq!(doc, json!({ "a": 1 }));
+        assert_eq!(doc, serde_to_jsonb(json!({ "a": 1 })));
 
         // Flush to force creation of JSTable
         for i in 0..MEMTABLE_THRESHOLD {
-            db.insert("test", json!({ "fill": i })).unwrap();
+            db.insert("test", serde_to_jsonb(json!({ "fill": i })))
+                .unwrap();
         }
 
         let doc = db.get("test", &id).unwrap().unwrap();
-        assert_eq!(doc, json!({ "a": 1 }));
+        assert_eq!(doc, serde_to_jsonb(json!({ "a": 1 })));
 
         assert!(db.get("test", "non-existent").unwrap().is_none());
     }

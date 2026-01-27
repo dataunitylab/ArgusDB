@@ -15,7 +15,7 @@ fn logging_benchmark(c: &mut Criterion) {
             for _ in 0..iters {
                 let op = Operation::Insert {
                     id: "test_doc_id".to_string(),
-                    doc: serde_json::json!({"key": "value"}),
+                    doc: serde_json::json!({"key": "value"}).into(),
                 };
 
                 logger.log(op).unwrap();

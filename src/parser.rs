@@ -1,7 +1,7 @@
 use crate::query::{
     BinaryOperator, Expression, LogicalOperator, LogicalPlan, ScalarFunction, Statement,
 };
-use serde_json::Value;
+use crate::{Value, serde_to_jsonb};
 use sqlparser::ast::{
     self, BinaryOperator as SqlBinaryOperator, Expr, LimitClause, SetExpr, TableFactor, Values,
 };
@@ -95,9 +95,9 @@ fn convert_insert_source(source: &Option<Box<ast::Query>>) -> Result<Vec<Value>,
                 match expr {
                     Expr::Identifier(ident) => {
                         let json_str = &ident.value;
-                        let value: Value = serde_json::from_str(json_str)
+                        let value: serde_json::Value = serde_json::from_str(json_str)
                             .map_err(|e| format!("Invalid JSON in INSERT: {}", e))?;
-                        docs.push(value);
+                        docs.push(serde_to_jsonb(value));
                     }
                     _ => return Err("Expected a JSON object enclosed in backticks".to_string()),
                 }
@@ -234,18 +234,30 @@ fn convert_expr(expr: &Expr) -> Result<Expression, String> {
             ast::Value::Number(n, _) => {
                 // Try parse as i64 or f64
                 if let Ok(i) = n.parse::<i64>() {
-                    Ok(Expression::Literal(serde_json::Value::Number(i.into())))
+                    // Create serde_json::Value first then convert?
+                    // Or create jsonb_schema::Value directly.
+                    // Value::Number(Number::Int64(i))
+                    use jsonb_schema::{Number, Value as JsonbValue};
+                    Ok(Expression::Literal(JsonbValue::Number(Number::Int64(i))))
                 } else if let Ok(f) = n.parse::<f64>() {
-                    Ok(Expression::Literal(serde_json::Value::Number(
-                        serde_json::Number::from_f64(f).ok_or("Invalid float")?,
-                    )))
+                    use jsonb_schema::{Number, Value as JsonbValue};
+                    Ok(Expression::Literal(JsonbValue::Number(Number::Float64(f))))
                 } else {
                     Err("Invalid number".to_string())
                 }
             }
-            ast::Value::SingleQuotedString(s) => Ok(Expression::Literal(Value::String(s.clone()))),
-            ast::Value::Boolean(b) => Ok(Expression::Literal(Value::Bool(*b))),
-            ast::Value::Null => Ok(Expression::Literal(Value::Null)),
+            ast::Value::SingleQuotedString(s) => {
+                use jsonb_schema::Value as JsonbValue;
+                Ok(Expression::Literal(JsonbValue::String(s.clone().into())))
+            }
+            ast::Value::Boolean(b) => {
+                use jsonb_schema::Value as JsonbValue;
+                Ok(Expression::Literal(JsonbValue::Bool(*b)))
+            }
+            ast::Value::Null => {
+                use jsonb_schema::Value as JsonbValue;
+                Ok(Expression::Literal(JsonbValue::Null))
+            }
             _ => Err(format!("Unsupported literal: {:?}", val_span.value)),
         },
         Expr::BinaryOp { left, op, right } => {
@@ -313,7 +325,7 @@ fn convert_expr(expr: &Expr) -> Result<Expression, String> {
                 _ => return Err(format!("Function {} expects arguments", name)),
             };
 
-            // Check arity
+            // Check arity (same as before)
             match scalar_func {
                 ScalarFunction::Rand => {
                     if !args_list.is_empty() {
@@ -362,6 +374,7 @@ fn convert_expr(expr: &Expr) -> Result<Expression, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::jsonb_to_serde;
 
     #[test]
     fn test_parse_insert() {
@@ -375,8 +388,10 @@ mod tests {
             } => {
                 assert_eq!(collection, "users");
                 assert_eq!(documents.len(), 2);
-                assert_eq!(documents[0]["name"], "Alice");
-                assert_eq!(documents[1]["name"], "Bob");
+                let doc0 = jsonb_to_serde(&documents[0]);
+                assert_eq!(doc0["name"], "Alice");
+                let doc1 = jsonb_to_serde(&documents[1]);
+                assert_eq!(doc1["name"], "Bob");
             }
             _ => panic!("Expected Insert"),
         }

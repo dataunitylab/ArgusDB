@@ -1,8 +1,9 @@
 use crate::db::DB;
+use crate::{Value, jsonb_to_serde, serde_to_jsonb};
+use jsonb_schema::Number;
 use jsonpath_rust::query::js_path_vals;
-use serde_json::Value;
 use std::cmp::Ordering;
-
+use std::collections::BTreeMap;
 use tracing::{Level, span};
 
 #[derive(Debug, Clone)]
@@ -172,7 +173,7 @@ impl<'a> Iterator for ProjectOperator<'a> {
     type Item = (String, Value);
     fn next(&mut self) -> Option<Self::Item> {
         if let Some((id, doc)) = self.child.next() {
-            let mut new_doc = serde_json::Map::new();
+            let mut new_doc = BTreeMap::new();
             for expr in &self.projections {
                 let value = evaluate_expression(expr, &doc);
                 match expr {
@@ -256,13 +257,19 @@ fn evaluate_expression(expr: &Expression, doc: &Value) -> Value {
     match expr {
         Expression::FieldReference(path) => get_path(doc, path).unwrap_or(Value::Null),
         Expression::JsonPath(path) => {
-            if let Ok(nodes) = js_path_vals(path, doc) {
+            let serde_val = jsonb_to_serde(doc);
+            if let Ok(nodes) = js_path_vals(path, &serde_val) {
                 if nodes.is_empty() {
                     Value::Null
                 } else if nodes.len() == 1 {
-                    nodes[0].clone()
+                    serde_to_jsonb(nodes[0].clone())
                 } else {
-                    Value::Array(nodes.into_iter().cloned().collect())
+                    Value::Array(
+                        nodes
+                            .into_iter()
+                            .map(|n| serde_to_jsonb(n.clone()))
+                            .collect(),
+                    )
                 }
             } else {
                 Value::Null
@@ -289,16 +296,27 @@ fn evaluate_expression(expr: &Expression, doc: &Value) -> Value {
     }
 }
 
+fn get_f64_from_number(n: &Number) -> Option<f64> {
+    match n {
+        Number::Int64(i) => Some(*i as f64),
+        Number::UInt64(u) => Some(*u as f64),
+        Number::Float64(f) => Some(*f),
+        _ => None,
+    }
+}
+
+fn get_i64_from_number(n: &Number) -> Option<i64> {
+    match n {
+        Number::Int64(i) => Some(*i),
+        Number::UInt64(u) => i64::try_from(*u).ok(),
+        _ => None,
+    }
+}
+
 fn evaluate_function(func: &ScalarFunction, vals: &[Value]) -> Value {
     let get_f64 = |v: &Value| -> Option<f64> {
         match v {
-            Value::Number(n) => {
-                if let Some(f) = n.as_f64() {
-                    Some(f)
-                } else {
-                    n.as_i64().map(|i| i as f64)
-                }
-            }
+            Value::Number(n) => get_f64_from_number(n),
             _ => None,
         }
     };
@@ -363,10 +381,7 @@ fn evaluate_function(func: &ScalarFunction, vals: &[Value]) -> Value {
         ScalarFunction::Log => match f1 {
             Some(x) => {
                 if vals.len() > 1 {
-                    match get_f64(&vals[1]) {
-                        Some(y) => Some(x.log(y)),
-                        None => None,
-                    }
+                    get_f64(&vals[1]).map(|y| x.log(y))
                 } else {
                     Some(x.ln())
                 }
@@ -402,9 +417,7 @@ fn evaluate_function(func: &ScalarFunction, vals: &[Value]) -> Value {
         if res.is_nan() || res.is_infinite() {
             Value::Null
         } else {
-            serde_json::Number::from_f64(res)
-                .map(Value::Number)
-                .unwrap_or(Value::Null)
+            Value::Number(Number::Float64(res))
         }
     } else {
         Value::Null
@@ -456,13 +469,11 @@ fn evaluate_logical(left: &Value, op: &LogicalOperator, right: &Value) -> Value 
 fn compare_values(left: &Value, right: &Value) -> Option<Ordering> {
     match (left, right) {
         (Value::Number(n1), Value::Number(n2)) => {
-            if n1.is_i64() && n2.is_i64() {
-                n1.as_i64().unwrap().partial_cmp(&n2.as_i64().unwrap())
-            } else if n1.is_f64() && n2.is_f64() {
-                n1.as_f64().unwrap().partial_cmp(&n2.as_f64().unwrap())
+            if let (Some(i1), Some(i2)) = (get_i64_from_number(n1), get_i64_from_number(n2)) {
+                i1.partial_cmp(&i2)
             } else {
-                let f1 = n1.as_f64()?;
-                let f2 = n2.as_f64()?;
+                let f1: f64 = get_f64_from_number(n1)?;
+                let f2: f64 = get_f64_from_number(n2)?;
                 f1.partial_cmp(&f2)
             }
         }
@@ -506,16 +517,14 @@ pub fn execute_plan<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jsonb_schema::Value as JsonbValue;
     use serde_json::json;
-
-    // Helper to create a mock source
-    // Since we now use standard Iterator, we can just use vec::IntoIter
 
     #[test]
     fn test_scan() {
         let data = vec![
-            ("1".to_string(), json!({"a": 1})),
-            ("2".to_string(), json!({"a": 2})),
+            ("1".to_string(), serde_to_jsonb(json!({"a": 1}))),
+            ("2".to_string(), serde_to_jsonb(json!({"a": 2}))),
         ];
         let source_iter = Box::new(data.into_iter());
         let mut scan = ScanOperator::new(source_iter);
@@ -528,9 +537,9 @@ mod tests {
     #[test]
     fn test_filter() {
         let data = vec![
-            ("1".to_string(), json!({"a": 1, "b": "yes"})),
-            ("2".to_string(), json!({"a": 2, "b": "no"})),
-            ("3".to_string(), json!({"a": 3, "b": "yes"})),
+            ("1".to_string(), serde_to_jsonb(json!({"a": 1, "b": "yes"}))),
+            ("2".to_string(), serde_to_jsonb(json!({"a": 2, "b": "no"}))),
+            ("3".to_string(), serde_to_jsonb(json!({"a": 3, "b": "yes"}))),
         ];
         let source = Box::new(data.into_iter());
 
@@ -538,13 +547,13 @@ mod tests {
             left: Box::new(Expression::Binary {
                 left: Box::new(Expression::FieldReference("a".to_string())),
                 op: BinaryOperator::Gt,
-                right: Box::new(Expression::Literal(json!(1))),
+                right: Box::new(Expression::Literal(serde_to_jsonb(json!(1)))),
             }),
             op: LogicalOperator::And,
             right: Box::new(Expression::Binary {
                 left: Box::new(Expression::FieldReference("b".to_string())),
                 op: BinaryOperator::Eq,
-                right: Box::new(Expression::Literal(json!("yes"))),
+                right: Box::new(Expression::Literal(serde_to_jsonb(json!("yes")))),
             }),
         };
 
@@ -558,8 +567,8 @@ mod tests {
     #[test]
     fn test_jsonpath() {
         let data = vec![
-            ("1".to_string(), json!({"a": {"b": 10}})),
-            ("2".to_string(), json!({"a": {"b": 20}})),
+            ("1".to_string(), serde_to_jsonb(json!({"a": {"b": 10}}))),
+            ("2".to_string(), serde_to_jsonb(json!({"a": {"b": 20}}))),
         ];
         let source = Box::new(data.into_iter());
 
@@ -567,7 +576,7 @@ mod tests {
         let predicate = Expression::Binary {
             left: Box::new(Expression::JsonPath("$.a.b".to_string())),
             op: BinaryOperator::Gt,
-            right: Box::new(Expression::Literal(json!(15))),
+            right: Box::new(Expression::Literal(serde_to_jsonb(json!(15)))),
         };
 
         let mut filter = FilterOperator::new(source, predicate);
@@ -579,7 +588,10 @@ mod tests {
 
     #[test]
     fn test_project() {
-        let data = vec![("1".to_string(), json!({"a": 1, "b": 2, "c": 3}))];
+        let data = vec![(
+            "1".to_string(),
+            serde_to_jsonb(json!({"a": 1, "b": 2, "c": 3})),
+        )];
         let source = Box::new(data.into_iter());
 
         let projections = vec![
@@ -590,20 +602,24 @@ mod tests {
         let mut project = ProjectOperator::new(source, projections);
 
         let (_, doc) = project.next().unwrap();
-        let obj = doc.as_object().unwrap();
-        assert_eq!(obj.len(), 2);
-        assert_eq!(obj.get("a").unwrap(), &json!(1));
-        assert_eq!(obj.get("c").unwrap(), &json!(3));
-        assert!(obj.get("b").is_none());
+        // Check fields using helper since as_object returns BTreeMap
+        if let JsonbValue::Object(obj) = doc {
+            assert_eq!(obj.len(), 2);
+            assert_eq!(obj.get("a").unwrap(), &serde_to_jsonb(json!(1)));
+            assert_eq!(obj.get("c").unwrap(), &serde_to_jsonb(json!(3)));
+            assert!(obj.get("b").is_none());
+        } else {
+            panic!("Expected object");
+        }
     }
 
     #[test]
     fn test_limit_offset() {
         let data = vec![
-            ("1".to_string(), json!({"a": 1})),
-            ("2".to_string(), json!({"a": 2})),
-            ("3".to_string(), json!({"a": 3})),
-            ("4".to_string(), json!({"a": 4})),
+            ("1".to_string(), serde_to_jsonb(json!({"a": 1}))),
+            ("2".to_string(), serde_to_jsonb(json!({"a": 2}))),
+            ("3".to_string(), serde_to_jsonb(json!({"a": 3}))),
+            ("4".to_string(), serde_to_jsonb(json!({"a": 4}))),
         ];
         let source = Box::new(data.into_iter());
 
@@ -617,7 +633,7 @@ mod tests {
 
     #[test]
     fn test_functions() {
-        let doc = json!({
+        let doc = serde_to_jsonb(json!({
             "neg": -10.5,
             "pos": 100,
             "val": 0.5,
@@ -629,7 +645,7 @@ mod tests {
             "nan_trigger": -1.0,
             "null_val": null,
             "str_val": "not a number"
-        });
+        }));
 
         // Helper to evaluate function on a list of fields
         let eval_args = |func: ScalarFunction, fields: Vec<&str>| {
@@ -645,18 +661,36 @@ mod tests {
         let eval = |func: ScalarFunction, field: &str| eval_args(func, vec![field]);
 
         // ABS
-        assert_eq!(eval(ScalarFunction::Abs, "neg"), json!(10.5));
+        assert_eq!(
+            eval(ScalarFunction::Abs, "neg"),
+            serde_to_jsonb(json!(10.5))
+        );
 
         // CEIL
-        assert_eq!(eval(ScalarFunction::Ceil, "neg"), json!(-10.0));
-        assert_eq!(eval(ScalarFunction::Ceil, "val"), json!(1.0));
+        assert_eq!(
+            eval(ScalarFunction::Ceil, "neg"),
+            serde_to_jsonb(json!(-10.0))
+        );
+        assert_eq!(
+            eval(ScalarFunction::Ceil, "val"),
+            serde_to_jsonb(json!(1.0))
+        );
 
         // FLOOR
-        assert_eq!(eval(ScalarFunction::Floor, "neg"), json!(-11.0));
-        assert_eq!(eval(ScalarFunction::Floor, "val"), json!(0.0));
+        assert_eq!(
+            eval(ScalarFunction::Floor, "neg"),
+            serde_to_jsonb(json!(-11.0))
+        );
+        assert_eq!(
+            eval(ScalarFunction::Floor, "val"),
+            serde_to_jsonb(json!(0.0))
+        );
 
         // SQRT
-        assert_eq!(eval(ScalarFunction::Sqrt, "pos"), json!(10.0));
+        assert_eq!(
+            eval(ScalarFunction::Sqrt, "pos"),
+            serde_to_jsonb(json!(10.0))
+        );
         assert_eq!(eval(ScalarFunction::Sqrt, "nan_trigger"), Value::Null);
 
         // LN
@@ -688,29 +722,41 @@ mod tests {
         assert!((tan_val - 0.0).abs() < 1e-10);
 
         // SIGN
-        assert_eq!(eval(ScalarFunction::Sign, "neg"), json!(-1.0));
-        assert_eq!(eval(ScalarFunction::Sign, "pos"), json!(1.0));
-        assert_eq!(eval(ScalarFunction::Sign, "zero"), json!(0.0));
+        assert_eq!(
+            eval(ScalarFunction::Sign, "neg"),
+            serde_to_jsonb(json!(-1.0))
+        );
+        assert_eq!(
+            eval(ScalarFunction::Sign, "pos"),
+            serde_to_jsonb(json!(1.0))
+        );
+        assert_eq!(
+            eval(ScalarFunction::Sign, "zero"),
+            serde_to_jsonb(json!(0.0))
+        );
 
         // EXP
         let exp_one = eval(ScalarFunction::Exp, "one").as_f64().unwrap();
         assert!((exp_one - std::f64::consts::E).abs() < 1e-10);
 
         // LOG10
-        assert_eq!(eval(ScalarFunction::Log10, "pos"), json!(2.0));
+        assert_eq!(
+            eval(ScalarFunction::Log10, "pos"),
+            serde_to_jsonb(json!(2.0))
+        );
 
         // Binary Functions
 
         // DIV(100, 2) = 50
         assert_eq!(
             eval_args(ScalarFunction::Div, vec!["pos", "two"]),
-            json!(50.0)
+            serde_to_jsonb(json!(50.0))
         );
 
         // POW(100, 0.5) = 10
         assert_eq!(
             eval_args(ScalarFunction::Pow, vec!["pos", "val"]),
-            json!(10.0)
+            serde_to_jsonb(json!(10.0))
         );
 
         // ATAN2(1, 1) -> pi/4
@@ -723,16 +769,29 @@ mod tests {
 
         // ROUND
         // ROUND(0.5) -> 1.0
-        assert_eq!(eval(ScalarFunction::Round, "val"), json!(1.0));
+        assert_eq!(
+            eval(ScalarFunction::Round, "val"),
+            serde_to_jsonb(json!(1.0))
+        );
         // ROUND(10.5) -> 11
         // ROUND(-10.5) -> -11
-        assert_eq!(eval(ScalarFunction::Round, "neg"), json!(-11.0));
+        assert_eq!(
+            eval(ScalarFunction::Round, "neg"),
+            serde_to_jsonb(json!(-11.0))
+        );
 
         // RAND() -> non-deterministic
         let r1 = eval_args(ScalarFunction::Rand, vec![]);
-        assert!(r1.is_number());
-        let val = r1.as_f64().unwrap();
-        assert!(val >= 0.0 && val < 1.0);
+        // match r1 { Value::Number(_) => ... }
+        if let JsonbValue::Number(n) = r1 {
+            let val = match n {
+                Number::Float64(f) => f,
+                _ => 0.0,
+            };
+            assert!(val >= 0.0 && val < 1.0);
+        } else {
+            panic!("Expected number");
+        }
 
         // Edge cases
         assert_eq!(eval(ScalarFunction::Abs, "null_val"), Value::Null);
@@ -742,22 +801,25 @@ mod tests {
 
     #[test]
     fn test_functions_with_constants() {
-        let doc = json!({});
+        let doc = serde_to_jsonb(json!({}));
 
         // ABS(-10)
         let expr = Expression::Function {
             func: ScalarFunction::Abs,
-            args: vec![Expression::Literal(json!(-10))],
+            args: vec![Expression::Literal(serde_to_jsonb(json!(-10)))],
         };
         let result = evaluate_expression(&expr, &doc);
-        assert_eq!(result, json!(10.0)); // json!(-10) is i64, result is f64 (10.0)
+        assert_eq!(result, serde_to_jsonb(json!(10.0))); // json!(-10) is i64, result is f64 (10.0)
 
         // POW(2, 3)
         let expr = Expression::Function {
             func: ScalarFunction::Pow,
-            args: vec![Expression::Literal(json!(2)), Expression::Literal(json!(3))],
+            args: vec![
+                Expression::Literal(serde_to_jsonb(json!(2))),
+                Expression::Literal(serde_to_jsonb(json!(3))),
+            ],
         };
         let result = evaluate_expression(&expr, &doc);
-        assert_eq!(result, json!(8.0));
+        assert_eq!(result, serde_to_jsonb(json!(8.0)));
     }
 }

@@ -16,6 +16,7 @@ use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tracing::{Level, info, span};
 
+use argusdb::Value;
 use argusdb::db::DB;
 use argusdb::parser as argus_parser;
 use argusdb::query::{Statement, execute_plan};
@@ -151,7 +152,7 @@ impl SimpleQueryHandler for ArgusHandler {
                     let obj = doc.as_object().unwrap();
                     for field in fields.iter() {
                         let key = field.name();
-                        let val = obj.get(key).unwrap_or(&serde_json::Value::Null);
+                        let val = obj.get(key).unwrap_or(&Value::Null);
                         encoder
                             .encode_field(&val.to_string())
                             .map_err(|e| PgWireError::ApiError(Box::new(e)))?;

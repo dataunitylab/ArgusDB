@@ -1,6 +1,6 @@
+use crate::Value;
 use crate::jstable::JSTable;
 use crate::schema::{Schema, SchemaExt, infer_schema};
-use serde_json::Value;
 use std::collections::BTreeMap;
 
 pub struct MemTable {
@@ -62,7 +62,8 @@ impl MemTable {
     }
 
     pub fn delete(&mut self, id: &str) {
-        self.documents.insert(id.to_string(), Value::Null);
+        use jsonb_schema::Value as JsonbValue;
+        self.documents.insert(id.to_string(), JsonbValue::Null);
     }
 }
 
@@ -70,6 +71,7 @@ impl MemTable {
 mod tests {
     use super::*;
     use crate::schema::{InstanceType, SingleOrVec};
+    use crate::serde_to_jsonb;
     use serde_json::json;
 
     fn get_types(schema: &Schema) -> Vec<InstanceType> {
@@ -83,8 +85,11 @@ mod tests {
     #[test]
     fn test_memtable_insert() {
         let mut memtable = MemTable::new();
-        memtable.insert("test-id".to_string(), json!({"a": 1}));
-        memtable.insert("test-id-2".to_string(), json!({"b": "hello"}));
+        memtable.insert("test-id".to_string(), serde_to_jsonb(json!({"a": 1})));
+        memtable.insert(
+            "test-id-2".to_string(),
+            serde_to_jsonb(json!({"b": "hello"})),
+        );
 
         assert_eq!(memtable.len(), 2);
 
@@ -104,12 +109,13 @@ mod tests {
     #[test]
     fn test_memtable_update() {
         let mut memtable = MemTable::new();
-        memtable.insert("test-id".to_string(), json!({"a": 1}));
-        memtable.update("test-id", json!({"b": "hello"}));
+        memtable.insert("test-id".to_string(), serde_to_jsonb(json!({"a": 1})));
+        memtable.update("test-id", serde_to_jsonb(json!({"b": "hello"})));
 
         assert_eq!(memtable.len(), 1);
         let doc = memtable.documents.get("test-id").unwrap();
-        assert_eq!(*doc, json!({"b": "hello"}));
+        // Comparing jsonb_schema::Value with another.
+        assert_eq!(*doc, serde_to_jsonb(json!({"b": "hello"})));
 
         let schema = memtable.schema;
         assert_eq!(get_types(&schema), vec![InstanceType::Object]);

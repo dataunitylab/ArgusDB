@@ -1,6 +1,6 @@
 use crate::schema::{InstanceType, Schema, SchemaExt};
+use crate::{SerdeWrapper, Value, make_static};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
@@ -91,7 +91,8 @@ impl JSTable {
                 first = false;
             }
 
-            let record: (String, &Value) = (id.clone(), doc);
+            // Use SerdeWrapper to serialize jsonb Value via serde infrastructure
+            let record = (id.clone(), SerdeWrapper(doc));
             let record_blob = jsonb_schema::to_owned_jsonb(&record)
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
             let record_bytes = record_blob.to_vec();
@@ -185,15 +186,24 @@ impl Iterator for JSTableIterator {
                     Ok(v) => v,
                     Err(e) => return Some(Err(e)),
                 };
-                let record_str = record_val.to_string();
-                let record: (String, Value) = match serde_json::from_str(&record_str)
-                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
-                {
-                    Ok(v) => v,
-                    Err(e) => return Some(Err(e)),
-                };
 
-                Some(Ok(record))
+                // record_val is [id, doc] (as jsonb Array).
+                let static_val = make_static(&record_val);
+
+                if let jsonb_schema::Value::Array(mut arr) = static_val
+                    && arr.len() == 2
+                {
+                    let doc = arr.pop().unwrap(); // Last element is doc
+                    let id_val = arr.pop().unwrap(); // First element is id
+                    if let jsonb_schema::Value::String(id_cow) = id_val {
+                        return Some(Ok((id_cow.into_owned(), doc)));
+                    }
+                }
+
+                Some(Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Invalid record structure",
+                )))
             }
             Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => None,
             Err(e) => Some(Err(e)),
@@ -320,7 +330,9 @@ pub fn merge_jstables(tables: &[JSTable]) -> JSTable {
         }
     }
 
-    merged_documents.retain(|_, v| !v.is_null());
+    // Filter nulls (tombstones) - Value::Null matches jsonb Null
+    use jsonb_schema::Value as JsonbValue;
+    merged_documents.retain(|_, v| !matches!(v, JsonbValue::Null));
 
     JSTable::new(max_timestamp, collection, merged_schema, merged_documents)
 }
@@ -329,6 +341,7 @@ pub fn merge_jstables(tables: &[JSTable]) -> JSTable {
 mod tests {
     use super::*;
     use crate::schema::{InstanceType, SingleOrVec};
+    use crate::{jsonb_to_serde, serde_to_jsonb};
     use serde_json::json;
     use tempfile::tempdir;
     use xorf::Filter;
@@ -349,8 +362,8 @@ mod tests {
             Schema::new(InstanceType::Integer),
         )]));
         let mut documents = BTreeMap::new();
-        documents.insert("id1".to_string(), json!({"a": 1}));
-        documents.insert("id2".to_string(), json!({"a": 2}));
+        documents.insert("id1".to_string(), serde_to_jsonb(json!({"a": 1})));
+        documents.insert("id2".to_string(), serde_to_jsonb(json!({"a": 2})));
         let jstable = JSTable::new(
             12345,
             "test_col".to_string(),
@@ -368,8 +381,13 @@ mod tests {
         assert_eq!(read_table.collection, "test_col");
         assert_eq!(get_types(&read_table.schema), vec![InstanceType::Object]);
         assert_eq!(read_table.documents.len(), 2);
-        assert_eq!(*read_table.documents.get("id1").unwrap(), json!({"a": 1}));
-        assert_eq!(*read_table.documents.get("id2").unwrap(), json!({"a": 2}));
+        // Compare values
+        let v1 = read_table.documents.get("id1").unwrap();
+        // convert to serde for easy comparison
+        assert_eq!(jsonb_to_serde(v1), json!({"a": 1}));
+
+        let v2 = read_table.documents.get("id2").unwrap();
+        assert_eq!(jsonb_to_serde(v2), json!({"a": 2}));
         Ok(())
     }
 
@@ -381,8 +399,8 @@ mod tests {
             Schema::new(InstanceType::Integer),
         )]));
         let mut documents = BTreeMap::new();
-        documents.insert("id1".to_string(), json!({"a": 1}));
-        documents.insert("id2".to_string(), json!({"a": 2}));
+        documents.insert("id1".to_string(), serde_to_jsonb(json!({"a": 1})));
+        documents.insert("id2".to_string(), serde_to_jsonb(json!({"a": 2})));
         let jstable = JSTable::new(
             12345,
             "test_col".to_string(),
@@ -404,7 +422,8 @@ mod tests {
             let (id, doc) = result?;
             count += 1;
             ids.push(id);
-            assert!(doc == json!({"a": 1}) || doc == json!({"a": 2}));
+            let s_doc = jsonb_to_serde(&doc);
+            assert!(s_doc == json!({"a": 1}) || s_doc == json!({"a": 2}));
         }
         assert_eq!(count, 2);
         assert!(ids.contains(&"id1".to_string()));
@@ -421,8 +440,8 @@ mod tests {
             Schema::new(InstanceType::Integer),
         )]));
         let mut documents = BTreeMap::new();
-        documents.insert("id1".to_string(), json!({"a": 1}));
-        documents.insert("id2".to_string(), json!({"a": 2}));
+        documents.insert("id1".to_string(), serde_to_jsonb(json!({"a": 1})));
+        documents.insert("id2".to_string(), serde_to_jsonb(json!({"a": 2})));
         let jstable = JSTable::new(
             12345,
             "test_col".to_string(),
@@ -456,31 +475,34 @@ mod tests {
         let schema = Schema::new(InstanceType::Object);
 
         let mut docs1 = BTreeMap::new();
-        docs1.insert("id1".to_string(), json!({"v": 1}));
+        docs1.insert("id1".to_string(), serde_to_jsonb(json!({"v": 1})));
         let t1 = JSTable::new(100, "test_col".to_string(), schema.clone(), docs1);
 
         let mut docs2 = BTreeMap::new();
-        docs2.insert("id1".to_string(), json!({"v": 2}));
+        docs2.insert("id1".to_string(), serde_to_jsonb(json!({"v": 2})));
         let t2 = JSTable::new(200, "test_col".to_string(), schema.clone(), docs2);
 
         // Case 1: t1 (older) then t2 (newer) in the slice
         let merged = merge_jstables(&[t1, t2]);
-        assert_eq!(*merged.documents.get("id1").unwrap(), json!({"v": 2}));
+        assert_eq!(
+            jsonb_to_serde(merged.documents.get("id1").unwrap()),
+            json!({"v": 2})
+        );
         assert_eq!(merged.timestamp, 200);
         assert_eq!(merged.collection, "test_col");
 
         // Case 2: Reverse order
         let mut docs1 = BTreeMap::new();
-        docs1.insert("id1".to_string(), json!({"v": 1}));
+        docs1.insert("id1".to_string(), serde_to_jsonb(json!({"v": 1})));
         let t1b = JSTable::new(100, "test_col".to_string(), schema.clone(), docs1);
 
         let mut docs2 = BTreeMap::new();
-        docs2.insert("id1".to_string(), json!({"v": 2}));
+        docs2.insert("id1".to_string(), serde_to_jsonb(json!({"v": 2})));
         let t2b = JSTable::new(200, "test_col".to_string(), schema.clone(), docs2);
 
         let merged_reverse = merge_jstables(&[t2b, t1b]);
         assert_eq!(
-            *merged_reverse.documents.get("id1").unwrap(),
+            jsonb_to_serde(merged_reverse.documents.get("id1").unwrap()),
             json!({"v": 2})
         );
         assert_eq!(merged_reverse.timestamp, 200);
@@ -491,9 +513,9 @@ mod tests {
         let schema = Schema::new(InstanceType::Object);
         let mut documents = BTreeMap::new();
         // Insert keys in non-sorted order (BTreeMap will sort them)
-        documents.insert("c".to_string(), json!(3));
-        documents.insert("a".to_string(), json!(1));
-        documents.insert("b".to_string(), json!(2));
+        documents.insert("c".to_string(), serde_to_jsonb(json!(3)));
+        documents.insert("a".to_string(), serde_to_jsonb(json!(1)));
+        documents.insert("b".to_string(), serde_to_jsonb(json!(2)));
 
         let jstable = JSTable::new(123, "sorted_test".to_string(), schema, documents);
 
@@ -512,22 +534,15 @@ mod tests {
     fn test_read_index() -> Result<(), Box<dyn std::error::Error>> {
         let schema = Schema::new(InstanceType::Object);
         let mut documents = BTreeMap::new();
-        // Insert enough data to trigger indexing (threshold 1024 bytes)
-        // Each entry: 4 bytes length + record bytes
-        // Record: ["id", "val..."]
-        // We want at least one entry after the first one.
 
         let large_val = "x".repeat(500); // ~500 bytes
-        documents.insert("a".to_string(), json!(large_val));
-        documents.insert("b".to_string(), json!(large_val));
-        documents.insert("c".to_string(), json!(large_val));
-        // a: offset 0. write ~500+ -> offset ~500+.
-        // b: offset ~500+. bytes_written since a ~ 500+. < 1024.
-        // c: offset ~1000+. bytes_written since a ~ 1000+. >= 1024?
-        // Let's make it larger.
+        documents.insert("a".to_string(), serde_to_jsonb(json!(large_val)));
+        documents.insert("b".to_string(), serde_to_jsonb(json!(large_val)));
+        documents.insert("c".to_string(), serde_to_jsonb(json!(large_val)));
+
         let larger_val = "x".repeat(1100);
-        documents.insert("d".to_string(), json!(larger_val));
-        documents.insert("e".to_string(), json!(1));
+        documents.insert("d".to_string(), serde_to_jsonb(json!(larger_val)));
+        documents.insert("e".to_string(), serde_to_jsonb(json!(1)));
 
         let jstable = JSTable::new(123, "idx_test".to_string(), schema, documents);
         let dir = tempdir()?;
@@ -535,22 +550,6 @@ mod tests {
         jstable.write(path.to_str().unwrap(), 1024)?;
 
         let index = read_index(path.to_str().unwrap())?;
-
-        // Should contain at least "a" (first) and "e" (after "d" which is large)
-        // actually "d" is ~1100.
-        // a (0), b (large), c (large), d (larger), e (1)
-        // sorted: a, b, c, d, e
-
-        // "a": offset 0.
-        // write "a" (large). bytes=1100.
-        // next is "b". bytes_since >= 1024. so "b" is indexed?
-        // Logic:
-        // if first || bytes_since >= 1024 { push; bytes=0 }
-        // "a": first. push ("a", 0). bytes=0.
-        // write "a" (1100). bytes=1100.
-        // "b": bytes >= 1024. push ("b", off_b). bytes=0.
-        // write "b" (1100). bytes=1100.
-        // "c": bytes >= 1024. push ("c", off_c).
 
         assert!(!index.is_empty());
         assert_eq!(index[0].0, "a");

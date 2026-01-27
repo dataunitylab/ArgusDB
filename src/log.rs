@@ -1,6 +1,6 @@
+use crate::{Value, serde_value};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -9,9 +9,19 @@ use tracing::{Level, span};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum Operation {
-    Insert { id: String, doc: Value },
-    Update { id: String, doc: Value },
-    Delete { id: String },
+    Insert {
+        id: String,
+        #[serde(with = "serde_value")]
+        doc: Value,
+    },
+    Update {
+        id: String,
+        #[serde(with = "serde_value")]
+        doc: Value,
+    },
+    Delete {
+        id: String,
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -82,6 +92,7 @@ impl Log for NullLogger {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::serde_to_jsonb;
     use serde_json::json;
     use tempfile::NamedTempFile;
 
@@ -91,7 +102,7 @@ mod tests {
         let mut logger = Logger::new(log_file.path(), 1024 * 1024).unwrap();
         let op = Operation::Insert {
             id: "test-id".to_string(),
-            doc: json!({"a": 1}),
+            doc: serde_to_jsonb(json!({"a": 1})),
         };
         logger.log(op).unwrap();
 
