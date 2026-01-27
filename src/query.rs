@@ -1,7 +1,6 @@
 use crate::db::DB;
-use crate::{Value, jsonb_to_serde, serde_to_jsonb};
+use crate::{SerdeWrapper, Value, make_static};
 use jsonb_schema::Number;
-use jsonpath_rust::query::js_path_vals;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use tracing::{Level, span};
@@ -256,20 +255,41 @@ impl<'a> Iterator for OffsetOperator<'a> {
 fn evaluate_expression(expr: &Expression, doc: &Value) -> Value {
     match expr {
         Expression::FieldReference(path) => get_path(doc, path).unwrap_or(Value::Null),
-        Expression::JsonPath(path) => {
-            let serde_val = jsonb_to_serde(doc);
-            if let Ok(nodes) = js_path_vals(path, &serde_val) {
-                if nodes.is_empty() {
-                    Value::Null
-                } else if nodes.len() == 1 {
-                    serde_to_jsonb(nodes[0].clone())
+        Expression::JsonPath(path_str) => {
+            let wrapper = SerdeWrapper(doc);
+            if let Ok(blob) = jsonb_schema::to_owned_jsonb(&wrapper) {
+                // Parse path
+                if let Ok(json_path) = jsonb_schema::jsonpath::parse_json_path(path_str.as_bytes())
+                {
+                    // Execute select_by_path on RawJsonb
+                    if let Ok(results) = blob.as_raw().select_by_path(&json_path) {
+                        if results.is_empty() {
+                            Value::Null
+                        } else if results.len() == 1 {
+                            // Extract single value
+                            let owned = results.into_iter().next().unwrap();
+                            let vec = owned.to_vec();
+                            if let Ok(val) = jsonb_schema::from_slice(&vec) {
+                                make_static(&val)
+                            } else {
+                                Value::Null
+                            }
+                        } else {
+                            // Array of values
+                            let mut arr = Vec::new();
+                            for owned in results {
+                                let vec = owned.to_vec();
+                                if let Ok(val) = jsonb_schema::from_slice(&vec) {
+                                    arr.push(make_static(&val));
+                                }
+                            }
+                            Value::Array(arr)
+                        }
+                    } else {
+                        Value::Null
+                    }
                 } else {
-                    Value::Array(
-                        nodes
-                            .into_iter()
-                            .map(|n| serde_to_jsonb(n.clone()))
-                            .collect(),
-                    )
+                    Value::Null
                 }
             } else {
                 Value::Null
@@ -517,6 +537,7 @@ pub fn execute_plan<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::serde_to_jsonb;
     use jsonb_schema::Value as JsonbValue;
     use serde_json::json;
 
