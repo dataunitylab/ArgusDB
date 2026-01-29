@@ -1,3 +1,4 @@
+pub mod bench_utils;
 pub mod db;
 pub mod jstable;
 pub mod log;
