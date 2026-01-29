@@ -1,3 +1,6 @@
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 #[cfg(feature = "mongo")]
 use argusdb::bench_utils::{Args, Query, load_queries, run_measurement};
 #[cfg(feature = "mongo")]

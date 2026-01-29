@@ -1,3 +1,6 @@
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 use async_trait::async_trait;
 use clap::Parser;
 use config::{Config, Environment, File};
