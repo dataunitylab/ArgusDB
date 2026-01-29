@@ -445,9 +445,8 @@ fn evaluate_function(func: &ScalarFunction, vals: &[Value]) -> Value {
 }
 
 fn get_path(doc: &Value, path: &str) -> Option<Value> {
-    let parts: Vec<&str> = path.split('.').collect();
     let mut current = doc;
-    for part in parts {
+    for part in path.split('.') {
         match current {
             Value::Object(map) => {
                 current = map.get(part)?;

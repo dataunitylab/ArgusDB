@@ -58,44 +58,44 @@ pub fn parse(sql: &str) -> Result<Statement, String> {
         }
     }
 
-    let ast = Parser::parse_sql(&dialect, sql).map_err(|e| e.to_string())?;
+    let mut ast = Parser::parse_sql(&dialect, sql).map_err(|e| e.to_string())?;
 
     if ast.len() != 1 {
         return Err("Expected exactly one statement".to_string());
     }
 
-    match &ast[0] {
+    match ast.pop().unwrap() {
         ast::Statement::Insert(insert) => {
             let collection = insert.table.to_string();
-            let documents = convert_insert_source(&insert.source)?;
+            let documents = convert_insert_source(insert.source)?;
             Ok(Statement::Insert {
                 collection,
                 documents,
             })
         }
         ast::Statement::Query(query) => {
-            let logical_plan = convert_query(query)?;
+            let logical_plan = convert_query(*query)?;
             Ok(Statement::Select(logical_plan))
         }
         _ => Err("Unsupported statement".to_string()),
     }
 }
 
-fn convert_insert_source(source: &Option<Box<ast::Query>>) -> Result<Vec<Value>, String> {
-    let query = source.as_ref().ok_or("Insert must have a source")?;
+fn convert_insert_source(source: Option<Box<ast::Query>>) -> Result<Vec<Value>, String> {
+    let query = source.ok_or("Insert must have a source")?;
 
-    match &*query.body {
+    match *query.body {
         SetExpr::Values(Values { rows, .. }) => {
             let mut docs = Vec::new();
             for row in rows {
                 if row.len() != 1 {
                     return Err("Each record must contain exactly one JSON object".to_string());
                 }
-                let expr = &row[0];
+                let expr = row.into_iter().next().unwrap();
                 match expr {
                     Expr::Identifier(ident) => {
-                        let json_str = &ident.value;
-                        let value: serde_json::Value = serde_json::from_str(json_str)
+                        let json_str = ident.value;
+                        let value: serde_json::Value = serde_json::from_str(&json_str)
                             .map_err(|e| format!("Invalid JSON in INSERT: {}", e))?;
                         docs.push(serde_to_jsonb(value));
                     }
@@ -108,13 +108,13 @@ fn convert_insert_source(source: &Option<Box<ast::Query>>) -> Result<Vec<Value>,
     }
 }
 
-fn convert_query(query: &ast::Query) -> Result<LogicalPlan, String> {
+fn convert_query(query: ast::Query) -> Result<LogicalPlan, String> {
     let mut limit_val = None;
     let mut offset_val = None;
 
-    if let Some(LimitClause::LimitOffset { limit, offset, .. }) = &query.limit_clause {
+    if let Some(LimitClause::LimitOffset { limit, offset, .. }) = query.limit_clause {
         if let Some(l) = limit {
-            limit_val = Some(parse_limit_expr(l)?);
+            limit_val = Some(parse_limit_expr(&l)?);
         }
         if let Some(o) = offset {
             offset_val = Some(parse_limit_expr(&o.value)?);
@@ -122,8 +122,8 @@ fn convert_query(query: &ast::Query) -> Result<LogicalPlan, String> {
     }
 
     // Body (SetExpr)
-    let plan = match &*query.body {
-        SetExpr::Select(select) => convert_select(select)?,
+    let plan = match *query.body {
+        SetExpr::Select(select) => convert_select(*select)?,
         _ => return Err("Only SELECT queries are supported (no UNION, etc.)".to_string()),
     };
 
@@ -161,13 +161,13 @@ fn parse_limit_expr(expr: &Expr) -> Result<usize, String> {
     }
 }
 
-fn convert_select(select: &ast::Select) -> Result<LogicalPlan, String> {
+fn convert_select(select: ast::Select) -> Result<LogicalPlan, String> {
     // 1. FROM (Scan)
     if select.from.len() != 1 {
         return Err("FROM clause must have exactly one table".to_string());
     }
-    let table = &select.from[0];
-    let collection = match &table.relation {
+    let table = select.from.into_iter().next().unwrap();
+    let collection = match table.relation {
         TableFactor::Table { name, .. } => name.to_string(),
         _ => return Err("Unsupported FROM clause".to_string()),
     };
@@ -175,7 +175,7 @@ fn convert_select(select: &ast::Select) -> Result<LogicalPlan, String> {
     let mut plan = LogicalPlan::Scan { collection };
 
     // 2. WHERE (Filter)
-    if let Some(selection) = &select.selection {
+    if let Some(selection) = select.selection {
         let predicate = convert_expr(selection)?;
         plan = LogicalPlan::Filter {
             input: Box::new(plan),
@@ -185,7 +185,7 @@ fn convert_select(select: &ast::Select) -> Result<LogicalPlan, String> {
 
     // 3. SELECT (Project)
     let mut projections = Vec::new();
-    for item in &select.projection {
+    for item in select.projection {
         match item {
             ast::SelectItem::UnnamedExpr(expr) => {
                 projections.push(convert_expr(expr)?);
@@ -208,10 +208,10 @@ fn convert_select(select: &ast::Select) -> Result<LogicalPlan, String> {
     Ok(plan)
 }
 
-fn convert_expr(expr: &Expr) -> Result<Expression, String> {
+fn convert_expr(expr: Expr) -> Result<Expression, String> {
     match expr {
         Expr::Identifier(ident) => {
-            let value = ident.value.clone();
+            let value = ident.value;
             if value.starts_with('$') {
                 Ok(Expression::JsonPath(value))
             } else {
@@ -220,8 +220,8 @@ fn convert_expr(expr: &Expr) -> Result<Expression, String> {
         }
         Expr::CompoundIdentifier(idents) => {
             let path = idents
-                .iter()
-                .map(|i| i.value.clone())
+                .into_iter()
+                .map(|i| i.value)
                 .collect::<Vec<_>>()
                 .join(".");
             if path.starts_with('$') {
@@ -230,7 +230,7 @@ fn convert_expr(expr: &Expr) -> Result<Expression, String> {
                 Ok(Expression::FieldReference(path))
             }
         }
-        Expr::Value(val_span) => match &val_span.value {
+        Expr::Value(val_span) => match val_span.value {
             ast::Value::Number(n, _) => {
                 // Try parse as i64 or f64
                 if let Ok(i) = n.parse::<i64>() {
@@ -248,11 +248,11 @@ fn convert_expr(expr: &Expr) -> Result<Expression, String> {
             }
             ast::Value::SingleQuotedString(s) => {
                 use jsonb_schema::Value as JsonbValue;
-                Ok(Expression::Literal(JsonbValue::String(s.clone().into())))
+                Ok(Expression::Literal(JsonbValue::String(s.into())))
             }
             ast::Value::Boolean(b) => {
                 use jsonb_schema::Value as JsonbValue;
-                Ok(Expression::Literal(JsonbValue::Bool(*b)))
+                Ok(Expression::Literal(JsonbValue::Bool(b)))
             }
             ast::Value::Null => {
                 use jsonb_schema::Value as JsonbValue;
@@ -261,8 +261,8 @@ fn convert_expr(expr: &Expr) -> Result<Expression, String> {
             _ => Err(format!("Unsupported literal: {:?}", val_span.value)),
         },
         Expr::BinaryOp { left, op, right } => {
-            let left_expr = Box::new(convert_expr(left)?);
-            let right_expr = Box::new(convert_expr(right)?);
+            let left_expr = Box::new(convert_expr(*left)?);
+            let right_expr = Box::new(convert_expr(*right)?);
 
             let (is_logical, b_op, l_op) = match op {
                 SqlBinaryOperator::Eq => (false, Some(BinaryOperator::Eq), None),
@@ -320,8 +320,8 @@ fn convert_expr(expr: &Expr) -> Result<Expression, String> {
                 _ => return Err(format!("Unsupported function: {}", name)),
             };
 
-            let args_list = match &func.args {
-                sqlparser::ast::FunctionArguments::List(list) => &list.args,
+            let args_list = match func.args {
+                sqlparser::ast::FunctionArguments::List(list) => list.args,
                 _ => return Err(format!("Function {} expects arguments", name)),
             };
 
