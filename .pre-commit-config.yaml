@@ -35,4 +35,4 @@ repos:
       - name: bench
         id: build
         stages: [pre-push]
-        args: ["--benches"]
+        args: ["--benches", "--all-features"]
