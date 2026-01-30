@@ -2,7 +2,9 @@
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 #[cfg(feature = "mongo")]
-use argusdb::bench_utils::{Args, Query, load_queries, run_measurement};
+use argusdb::bench_utils::{
+    Args, Query, load_queries, run_measurement, save_profile, start_profiling,
+};
 #[cfg(feature = "mongo")]
 use argusdb::{
     jsonb_to_serde, parser,
@@ -97,6 +99,11 @@ async fn main() {
     .await;
 
     println!("Starting measurement for {} seconds...", args.duration);
+    #[cfg(all(feature = "profiling", feature = "mongo"))]
+    let guard = start_profiling(args.profile);
+    #[cfg(all(not(feature = "profiling"), feature = "mongo"))]
+    let guard = start_profiling(false);
+
     let results = run_measurement(
         args.concurrency,
         args.duration,
@@ -106,6 +113,7 @@ async fn main() {
         true,
     )
     .await;
+    save_profile(guard);
 
     println!("Results:");
     for (name, (count, total_time)) in results {

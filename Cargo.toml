@@ -24,9 +24,12 @@ rand = "0.9.2"
 tempfile = "3.10.1"
 tikv-jemallocator = "0.6.1"
 bumpalo = "3.16"
+pprof = { version = "0.15.0", optional = true, "features" = ["protobuf-codec"] }
+protobuf = { version = "3.7.2", optional = true }
 
 [features]
 mongo = ["dep:mongodb"]
+profiling = ["dep:pprof", "dep:protobuf"]
 
 [dev-dependencies]
 criterion = "0.8.1"

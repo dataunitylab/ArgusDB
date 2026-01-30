@@ -20,6 +20,10 @@ pub struct Args {
 
     #[arg(short, long, default_value_t = 30)]
     pub duration: u64,
+
+    #[cfg(feature = "profiling")]
+    #[arg(long, default_value_t = false)]
+    pub profile: bool,
 }
 
 #[derive(Clone)]
@@ -108,3 +112,49 @@ where
     let res = results.lock().await;
     (*res).clone()
 }
+
+#[cfg(feature = "profiling")]
+pub fn start_profiling(enable: bool) -> Option<pprof::ProfilerGuard<'static>> {
+    if enable {
+        Some(
+            pprof::ProfilerGuardBuilder::default()
+                .frequency(1000)
+                .blocklist(&["libc", "libgcc", "pthread", "vdso"])
+                .build()
+                .unwrap(),
+        )
+    } else {
+        None
+    }
+}
+
+#[cfg(not(feature = "profiling"))]
+pub fn start_profiling(_enable: bool) -> Option<()> {
+    None
+}
+
+#[cfg(feature = "profiling")]
+pub fn save_profile(guard: Option<pprof::ProfilerGuard<'static>>) {
+    use protobuf::Message;
+    use std::fs::File;
+    use std::io::Write;
+
+    if let Some(g) = guard {
+        match g.report().build() {
+            Ok(report) => {
+                let mut file = File::create("profile.pb").unwrap();
+                let profile = report.pprof().unwrap();
+
+                let mut content = Vec::new();
+                profile.write_to_writer(&mut content).unwrap();
+                file.write_all(&content).unwrap();
+
+                println!("report: {:?}", &report);
+            }
+            Err(_) => {}
+        };
+    }
+}
+
+#[cfg(not(feature = "profiling"))]
+pub fn save_profile(_guard: Option<()>) {}
