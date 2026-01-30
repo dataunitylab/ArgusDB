@@ -1,28 +1,29 @@
 use crate::db::DB;
 use crate::{SerdeWrapper, Value, make_static};
 use jsonb_schema::Number;
+use jsonb_schema::jsonpath::JsonPath;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use tracing::{Level, span};
 
 #[derive(Debug, Clone)]
-pub enum Expression {
-    FieldReference(Vec<String>, String), // (split path, raw string)
-    JsonPath(String),                    // JSONPath e.g. "$.a.b"
+pub enum Expression<'a> {
+    FieldReference(Vec<&'a str>, &'a str), // (split path in arena, raw string in arena)
+    JsonPath(Box<JsonPath<'a>>, &'a str),  // (compiled path, raw string in arena)
     Literal(Value),
     Binary {
-        left: Box<Expression>,
+        left: Box<Expression<'a>>,
         op: BinaryOperator,
-        right: Box<Expression>,
+        right: Box<Expression<'a>>,
     },
     Logical {
-        left: Box<Expression>,
+        left: Box<Expression<'a>>,
         op: LogicalOperator,
-        right: Box<Expression>,
+        right: Box<Expression<'a>>,
     },
     Function {
         func: ScalarFunction,
-        args: Vec<Expression>,
+        args: Vec<Expression<'a>>,
     },
 }
 
@@ -71,35 +72,35 @@ pub enum ScalarFunction {
 }
 
 #[derive(Debug, Clone)]
-pub enum LogicalPlan {
+pub enum LogicalPlan<'a> {
     Scan {
-        collection: String,
+        collection: String, // Keep String for now to avoid arena requirement for simple scans if possible, but actually we will put it in arena for consistency
     },
     Filter {
-        input: Box<LogicalPlan>,
-        predicate: Expression,
+        input: Box<LogicalPlan<'a>>,
+        predicate: Expression<'a>,
     },
     Project {
-        input: Box<LogicalPlan>,
-        projections: Vec<Expression>,
+        input: Box<LogicalPlan<'a>>,
+        projections: Vec<Expression<'a>>,
     },
     Limit {
-        input: Box<LogicalPlan>,
+        input: Box<LogicalPlan<'a>>,
         limit: usize,
     },
     Offset {
-        input: Box<LogicalPlan>,
+        input: Box<LogicalPlan<'a>>,
         offset: usize,
     },
 }
 
 #[derive(Debug, Clone)]
-pub enum Statement {
+pub enum Statement<'a> {
     Insert {
         collection: String,
         documents: Vec<Value>,
     },
-    Select(LogicalPlan),
+    Select(LogicalPlan<'a>),
     CreateCollection {
         collection: String,
     },
@@ -130,13 +131,13 @@ impl<'a> Iterator for ScanOperator<'a> {
 
 pub struct FilterOperator<'a> {
     child: Box<dyn Iterator<Item = (String, Value)> + 'a>,
-    predicate: Expression,
+    predicate: Expression<'a>,
 }
 
 impl<'a> FilterOperator<'a> {
     pub fn new(
         child: Box<dyn Iterator<Item = (String, Value)> + 'a>,
-        predicate: Expression,
+        predicate: Expression<'a>,
     ) -> Self {
         FilterOperator { child, predicate }
     }
@@ -156,13 +157,13 @@ impl<'a> Iterator for FilterOperator<'a> {
 
 pub struct ProjectOperator<'a> {
     child: Box<dyn Iterator<Item = (String, Value)> + 'a>,
-    projections: Vec<Expression>,
+    projections: Vec<Expression<'a>>,
 }
 
 impl<'a> ProjectOperator<'a> {
     pub fn new(
         child: Box<dyn Iterator<Item = (String, Value)> + 'a>,
-        projections: Vec<Expression>,
+        projections: Vec<Expression<'a>>,
     ) -> Self {
         ProjectOperator { child, projections }
     }
@@ -177,10 +178,10 @@ impl<'a> Iterator for ProjectOperator<'a> {
                 let value = evaluate_expression(expr, &doc);
                 match expr {
                     Expression::FieldReference(_, raw) => {
-                        new_doc.insert(raw.clone(), value);
+                        new_doc.insert(raw.to_string(), value);
                     }
-                    Expression::JsonPath(path) => {
-                        new_doc.insert(path.clone(), value);
+                    Expression::JsonPath(_, raw) => {
+                        new_doc.insert(raw.to_string(), value);
                     }
                     _ => {
                         // Fallback/TODO: Handle computed columns alias
@@ -252,41 +253,35 @@ impl<'a> Iterator for OffsetOperator<'a> {
 
 // Evaluator
 
-fn evaluate_expression(expr: &Expression, doc: &Value) -> Value {
+fn evaluate_expression<'a>(expr: &Expression<'a>, doc: &Value) -> Value {
     match expr {
         Expression::FieldReference(parts, _) => get_path(doc, parts).unwrap_or(Value::Null),
-        Expression::JsonPath(path_str) => {
+        Expression::JsonPath(json_path, _) => {
             let wrapper = SerdeWrapper(doc);
             if let Ok(blob) = jsonb_schema::to_owned_jsonb(&wrapper) {
-                // Parse path
-                if let Ok(json_path) = jsonb_schema::jsonpath::parse_json_path(path_str.as_bytes())
-                {
-                    // Execute select_by_path on RawJsonb
-                    if let Ok(results) = blob.as_raw().select_by_path(&json_path) {
-                        if results.is_empty() {
-                            Value::Null
-                        } else if results.len() == 1 {
-                            // Extract single value
-                            let owned = results.into_iter().next().unwrap();
-                            let vec = owned.to_vec();
-                            if let Ok(val) = jsonb_schema::from_slice(&vec) {
-                                make_static(&val)
-                            } else {
-                                Value::Null
-                            }
+                // Execute select_by_path on RawJsonb
+                if let Ok(results) = blob.as_raw().select_by_path(json_path) {
+                    if results.is_empty() {
+                        Value::Null
+                    } else if results.len() == 1 {
+                        // Extract single value
+                        let owned = results.into_iter().next().unwrap();
+                        let vec = owned.to_vec();
+                        if let Ok(val) = jsonb_schema::from_slice(&vec) {
+                            make_static(&val)
                         } else {
-                            // Array of values
-                            let mut arr = Vec::new();
-                            for owned in results {
-                                let vec = owned.to_vec();
-                                if let Ok(val) = jsonb_schema::from_slice(&vec) {
-                                    arr.push(make_static(&val));
-                                }
-                            }
-                            Value::Array(arr)
+                            Value::Null
                         }
                     } else {
-                        Value::Null
+                        // Array of values
+                        let mut arr = Vec::new();
+                        for owned in results {
+                            let vec = owned.to_vec();
+                            if let Ok(val) = jsonb_schema::from_slice(&vec) {
+                                arr.push(make_static(&val));
+                            }
+                        }
+                        Value::Array(arr)
                     }
                 } else {
                     Value::Null
@@ -444,12 +439,12 @@ fn evaluate_function(func: &ScalarFunction, vals: &[Value]) -> Value {
     }
 }
 
-fn get_path(doc: &Value, parts: &[String]) -> Option<Value> {
+fn get_path(doc: &Value, parts: &[&str]) -> Option<Value> {
     let mut current = doc;
     for part in parts {
         match current {
             Value::Object(map) => {
-                current = map.get(part)?;
+                current = map.get(*part)?;
             }
             _ => return None,
         }
@@ -503,7 +498,7 @@ fn compare_values(left: &Value, right: &Value) -> Option<Ordering> {
 }
 
 pub fn execute_plan<'a>(
-    plan: LogicalPlan,
+    plan: LogicalPlan<'a>,
     db: &'a DB,
 ) -> Result<Box<dyn Iterator<Item = (String, Value)> + 'a>, String> {
     let span = span!(Level::DEBUG, "plan", plan = ?plan);
@@ -540,12 +535,19 @@ mod tests {
     use jsonb_schema::Value as JsonbValue;
     use serde_json::json;
 
-    fn make_field_ref(s: &str) -> Expression {
-        Expression::FieldReference(s.split('.').map(|s| s.to_string()).collect(), s.to_string())
+    fn make_field_ref(s: &str) -> Expression<'_> {
+        Expression::FieldReference(s.split('.').collect(), s)
     }
 
-    fn make_json_path(s: &str) -> Expression {
-        Expression::JsonPath(s.to_string())
+    fn make_json_path(s: &str) -> Expression<'_> {
+        // This is tricky for tests because Expression borrows 'a.
+        // We will need to box leak the string or ensure it lives long enough.
+        // For simple tests, we can just use string literals which are 'static.
+        // But JsonPath parsing requires byte slice.
+        Expression::JsonPath(
+            Box::new(jsonb_schema::jsonpath::parse_json_path(s.as_bytes()).unwrap()),
+            s,
+        )
     }
 
     #[test]

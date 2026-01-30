@@ -6,6 +6,7 @@ use argusdb::db::DB;
 use argusdb::parser;
 use argusdb::query::{Statement, execute_plan};
 use argusdb::serde_to_jsonb;
+use bumpalo::Bump;
 use clap::Parser;
 use std::fs;
 use std::path::Path;
@@ -15,7 +16,8 @@ use tokio::sync::Mutex;
 
 async fn execute_query(db: Arc<Mutex<DB>>, query: Query) {
     // Parse
-    let stmt = match parser::parse(&query.sql) {
+    let arena = Bump::new();
+    let stmt = match parser::parse(&query.sql, &arena) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("Error parsing {}: {}", query.name, e);

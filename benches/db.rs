@@ -13,7 +13,11 @@ fn generate_doc_with_keys(num_keys: usize, i: usize) -> serde_json::Value {
     serde_json::Value::Object(doc)
 }
 
-fn generate_query_plan(collection_name: &str, selectivity: f64, total_docs: usize) -> LogicalPlan {
+fn generate_query_plan(
+    collection_name: &str,
+    selectivity: f64,
+    total_docs: usize,
+) -> LogicalPlan<'_> {
     let scan_plan = LogicalPlan::Scan {
         collection: collection_name.to_string(),
     };
@@ -26,10 +30,7 @@ fn generate_query_plan(collection_name: &str, selectivity: f64, total_docs: usiz
     let filter_value = (total_docs as f64 * selectivity).round() as i64;
 
     let predicate = Expression::Binary {
-        left: Box::new(Expression::FieldReference(
-            vec!["value".to_string()],
-            "value".to_string(),
-        )),
+        left: Box::new(Expression::FieldReference(vec!["value"], "value")),
         op: BinaryOperator::Lt,
         right: Box::new(Expression::Literal(json!(filter_value).into())),
     };

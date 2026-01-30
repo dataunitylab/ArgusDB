@@ -2,6 +2,7 @@
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 use async_trait::async_trait;
+use bumpalo::Bump;
 use clap::Parser;
 use config::{Config, Environment, File};
 use futures::stream;
@@ -100,7 +101,8 @@ impl SimpleQueryHandler for ArgusHandler {
         let span = span!(Level::DEBUG, "query", query);
         let _enter = span.enter();
 
-        let stmt = match argus_parser::parse(query) {
+        let arena = Bump::new();
+        let stmt = match argus_parser::parse(query, &arena) {
             Ok(s) => s,
             Err(e) => {
                 return Ok(vec![Response::Error(Box::new(

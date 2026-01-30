@@ -9,6 +9,8 @@ use argusdb::{
     query::{BinaryOperator, Expression, LogicalOperator, LogicalPlan, ScalarFunction, Statement},
 };
 #[cfg(feature = "mongo")]
+use bumpalo::Bump;
+#[cfg(feature = "mongo")]
 use clap::Parser;
 #[cfg(feature = "mongo")]
 use mongodb::{Client, bson::Bson, bson::Document, bson::doc, options::ClientOptions};
@@ -118,7 +120,8 @@ async fn main() {
 
 #[cfg(feature = "mongo")]
 async fn execute_mongo_query(db: Arc<mongodb::Database>, query: Query) {
-    let stmt = match parser::parse(&query.sql) {
+    let arena = Bump::new();
+    let stmt = match parser::parse(&query.sql, &arena) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("Error parsing {}: {}", query.name, e);
@@ -174,7 +177,7 @@ async fn execute_mongo_query(db: Arc<mongodb::Database>, query: Query) {
                 for (i, expr) in projs.iter().enumerate() {
                     let val = expr_to_project_expr(expr);
                     let field_name = if let Expression::FieldReference(_, s) = expr {
-                        s.clone()
+                        s.to_string()
                     } else {
                         format!("col_{}", i)
                     };
@@ -211,12 +214,12 @@ fn expr_to_match(expr: &Expression) -> Option<Document> {
                 let serde_v = jsonb_to_serde(v);
                 let bson_v = json_to_bson(&serde_v);
                 match op {
-                    BinaryOperator::Eq => Some(doc! { f: bson_v }),
-                    BinaryOperator::Gt => Some(doc! { f: { "$gt": bson_v } }),
-                    BinaryOperator::Lt => Some(doc! { f: { "$lt": bson_v } }),
-                    BinaryOperator::Gte => Some(doc! { f: { "$gte": bson_v } }),
-                    BinaryOperator::Lte => Some(doc! { f: { "$lte": bson_v } }),
-                    BinaryOperator::Neq => Some(doc! { f: { "$ne": bson_v } }),
+                    BinaryOperator::Eq => Some(doc! { *f: bson_v }),
+                    BinaryOperator::Gt => Some(doc! { *f: { "$gt": bson_v } }),
+                    BinaryOperator::Lt => Some(doc! { *f: { "$lt": bson_v } }),
+                    BinaryOperator::Gte => Some(doc! { *f: { "$gte": bson_v } }),
+                    BinaryOperator::Lte => Some(doc! { *f: { "$lte": bson_v } }),
+                    BinaryOperator::Neq => Some(doc! { *f: { "$ne": bson_v } }),
                 }
             } else {
                 None
