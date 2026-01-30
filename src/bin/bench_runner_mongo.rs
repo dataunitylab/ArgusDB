@@ -173,7 +173,7 @@ async fn execute_mongo_query(db: Arc<mongodb::Database>, query: Query) {
                 let mut project_doc = Document::new();
                 for (i, expr) in projs.iter().enumerate() {
                     let val = expr_to_project_expr(expr);
-                    let field_name = if let Expression::FieldReference(s) = expr {
+                    let field_name = if let Expression::FieldReference(_, s) = expr {
                         s.clone()
                     } else {
                         format!("col_{}", i)
@@ -205,7 +205,7 @@ async fn execute_mongo_query(db: Arc<mongodb::Database>, query: Query) {
 fn expr_to_match(expr: &Expression) -> Option<Document> {
     match expr {
         Expression::Binary { left, op, right } => {
-            if let (Expression::FieldReference(f), Expression::Literal(v)) =
+            if let (Expression::FieldReference(_, f), Expression::Literal(v)) =
                 (left.as_ref(), right.as_ref())
             {
                 let serde_v = jsonb_to_serde(v);
@@ -237,7 +237,7 @@ fn expr_to_match(expr: &Expression) -> Option<Document> {
 #[cfg(feature = "mongo")]
 fn expr_to_project_expr(expr: &Expression) -> Bson {
     match expr {
-        Expression::FieldReference(s) => Bson::String(format!("${}", s)),
+        Expression::FieldReference(_, s) => Bson::String(format!("${}", s)),
         Expression::Function { func, args } => {
             if args.is_empty() {
                 return Bson::Null;

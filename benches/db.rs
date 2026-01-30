@@ -26,7 +26,10 @@ fn generate_query_plan(collection_name: &str, selectivity: f64, total_docs: usiz
     let filter_value = (total_docs as f64 * selectivity).round() as i64;
 
     let predicate = Expression::Binary {
-        left: Box::new(Expression::FieldReference("value".to_string())),
+        left: Box::new(Expression::FieldReference(
+            vec!["value".to_string()],
+            "value".to_string(),
+        )),
         op: BinaryOperator::Lt,
         right: Box::new(Expression::Literal(json!(filter_value).into())),
     };

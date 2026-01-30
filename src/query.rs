@@ -7,8 +7,8 @@ use tracing::{Level, span};
 
 #[derive(Debug, Clone)]
 pub enum Expression {
-    FieldReference(String), // dot notation e.g. "a.b"
-    JsonPath(String),       // JSONPath e.g. "$.a.b"
+    FieldReference(Vec<String>, String), // (split path, raw string)
+    JsonPath(String),                    // JSONPath e.g. "$.a.b"
     Literal(Value),
     Binary {
         left: Box<Expression>,
@@ -176,8 +176,8 @@ impl<'a> Iterator for ProjectOperator<'a> {
             for expr in &self.projections {
                 let value = evaluate_expression(expr, &doc);
                 match expr {
-                    Expression::FieldReference(path) => {
-                        new_doc.insert(path.clone(), value);
+                    Expression::FieldReference(_, raw) => {
+                        new_doc.insert(raw.clone(), value);
                     }
                     Expression::JsonPath(path) => {
                         new_doc.insert(path.clone(), value);
@@ -254,7 +254,7 @@ impl<'a> Iterator for OffsetOperator<'a> {
 
 fn evaluate_expression(expr: &Expression, doc: &Value) -> Value {
     match expr {
-        Expression::FieldReference(path) => get_path(doc, path).unwrap_or(Value::Null),
+        Expression::FieldReference(parts, _) => get_path(doc, parts).unwrap_or(Value::Null),
         Expression::JsonPath(path_str) => {
             let wrapper = SerdeWrapper(doc);
             if let Ok(blob) = jsonb_schema::to_owned_jsonb(&wrapper) {
@@ -444,9 +444,9 @@ fn evaluate_function(func: &ScalarFunction, vals: &[Value]) -> Value {
     }
 }
 
-fn get_path(doc: &Value, path: &str) -> Option<Value> {
+fn get_path(doc: &Value, parts: &[String]) -> Option<Value> {
     let mut current = doc;
-    for part in path.split('.') {
+    for part in parts {
         match current {
             Value::Object(map) => {
                 current = map.get(part)?;
@@ -540,6 +540,14 @@ mod tests {
     use jsonb_schema::Value as JsonbValue;
     use serde_json::json;
 
+    fn make_field_ref(s: &str) -> Expression {
+        Expression::FieldReference(s.split('.').map(|s| s.to_string()).collect(), s.to_string())
+    }
+
+    fn make_json_path(s: &str) -> Expression {
+        Expression::JsonPath(s.to_string())
+    }
+
     #[test]
     fn test_scan() {
         let data = vec![
@@ -565,13 +573,13 @@ mod tests {
 
         let predicate = Expression::Logical {
             left: Box::new(Expression::Binary {
-                left: Box::new(Expression::FieldReference("a".to_string())),
+                left: Box::new(make_field_ref("a")),
                 op: BinaryOperator::Gt,
                 right: Box::new(Expression::Literal(serde_to_jsonb(json!(1)))),
             }),
             op: LogicalOperator::And,
             right: Box::new(Expression::Binary {
-                left: Box::new(Expression::FieldReference("b".to_string())),
+                left: Box::new(make_field_ref("b")),
                 op: BinaryOperator::Eq,
                 right: Box::new(Expression::Literal(serde_to_jsonb(json!("yes")))),
             }),
@@ -594,7 +602,7 @@ mod tests {
 
         // Filter: $.a.b > 15
         let predicate = Expression::Binary {
-            left: Box::new(Expression::JsonPath("$.a.b".to_string())),
+            left: Box::new(make_json_path("$.a.b")),
             op: BinaryOperator::Gt,
             right: Box::new(Expression::Literal(serde_to_jsonb(json!(15)))),
         };
@@ -614,10 +622,7 @@ mod tests {
         )];
         let source = Box::new(data.into_iter());
 
-        let projections = vec![
-            Expression::FieldReference("a".to_string()),
-            Expression::FieldReference("c".to_string()),
-        ];
+        let projections = vec![make_field_ref("a"), make_field_ref("c")];
 
         let mut project = ProjectOperator::new(source, projections);
 
@@ -669,10 +674,7 @@ mod tests {
 
         // Helper to evaluate function on a list of fields
         let eval_args = |func: ScalarFunction, fields: Vec<&str>| {
-            let args = fields
-                .iter()
-                .map(|f| Expression::FieldReference(f.to_string()))
-                .collect();
+            let args = fields.iter().map(|f| make_field_ref(f)).collect();
             let expr = Expression::Function { func, args };
             evaluate_expression(&expr, &doc)
         };

@@ -215,7 +215,8 @@ fn convert_expr(expr: Expr) -> Result<Expression, String> {
             if value.starts_with('$') {
                 Ok(Expression::JsonPath(value))
             } else {
-                Ok(Expression::FieldReference(value))
+                let parts: Vec<String> = value.split('.').map(|s| s.to_string()).collect();
+                Ok(Expression::FieldReference(parts, value))
             }
         }
         Expr::CompoundIdentifier(idents) => {
@@ -227,7 +228,8 @@ fn convert_expr(expr: Expr) -> Result<Expression, String> {
             if path.starts_with('$') {
                 Ok(Expression::JsonPath(path))
             } else {
-                Ok(Expression::FieldReference(path))
+                let parts: Vec<String> = path.split('.').map(|s| s.to_string()).collect();
+                Ok(Expression::FieldReference(parts, path))
             }
         }
         Expr::Value(val_span) => match val_span.value {
@@ -510,7 +512,7 @@ mod tests {
                         assert_eq!(*func, ScalarFunction::Abs);
                         assert_eq!(args.len(), 1);
                         match &args[0] {
-                            Expression::FieldReference(s) => assert_eq!(s, "age"),
+                            Expression::FieldReference(_, s) => assert_eq!(s, "age"),
                             _ => panic!("Expected FieldReference"),
                         }
                     }
