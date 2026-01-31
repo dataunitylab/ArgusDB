@@ -1,6 +1,6 @@
 use crate::schema::{InstanceType, Schema, SchemaExt};
 use crate::{LazyDocument, SerdeWrapper, Value, make_static};
-use jsonb_schema::{OwnedJsonb, RawJsonb};
+use jsonb_schema::RawJsonb;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs::File;

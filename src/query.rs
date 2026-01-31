@@ -1,7 +1,7 @@
 use crate::db::DB;
 use crate::{ExecutionResult, LazyDocument, SerdeWrapper, Value, make_static};
 use jsonb_schema::jsonpath::JsonPath;
-use jsonb_schema::{Number, OwnedJsonb, RawJsonb, Value as JsonbValue};
+use jsonb_schema::{Number, OwnedJsonb, RawJsonb};
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use tracing::{Level, span};

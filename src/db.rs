@@ -71,22 +71,7 @@ impl<'a> Iterator for MergedIterator<'a> {
                         }
                     }
                     ExecutionResult::Lazy(doc) => {
-                        // We need to check if it's a tombstone.
-                        // This requires checking the 'doc' part.
-                        // If we are lazy, we might not want to decode yet.
-                        // But if it is a tombstone, we shouldn't yield it.
-                        // So we MUST check if it is Null.
-                        // Optimized check for Null in jsonb:
-                        // Null is encoded as a specific byte sequence or type.
-                        // But doc.raw is [id, doc].
-                        // We can decode just the doc part or use get_value() for now to be safe.
-                        // If we implement is_null() on LazyDocument later, we can optimize.
-                        // For now, let's decode to check for tombstone.
-                        // This is a partial eager decode, but unavoidable for correctness of deletes.
-                        let val = res.get_value();
-                        use jsonb_schema::Value as JsonbValue;
-                        if !matches!(val, JsonbValue::Null) {
-                            // We return the Lazy result, not the decoded value, to keep laziness for downstream
+                        if !doc.is_tombstone() {
                             return Some(res);
                         }
                     }

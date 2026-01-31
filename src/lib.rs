@@ -7,7 +7,7 @@ pub mod query;
 pub mod schema;
 pub mod storage;
 
-use jsonb_schema::{Number, Value as JsonbValue};
+use jsonb_schema::{Number, RawJsonb, Value as JsonbValue};
 use serde::{Serialize, Serializer};
 use std::collections::BTreeMap;
 
@@ -17,6 +17,17 @@ pub type Value = JsonbValue<'static>;
 pub struct LazyDocument {
     pub id: String,
     pub raw: Vec<u8>,
+}
+
+impl LazyDocument {
+    pub fn is_tombstone(&self) -> bool {
+        let raw = RawJsonb::new(&self.raw);
+        if let Ok(Some(doc)) = raw.get_by_index(1) {
+            doc.as_raw().is_null().unwrap_or(false)
+        } else {
+            false
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -184,5 +195,37 @@ pub fn make_static(v: &JsonbValue) -> Value {
             JsonbValue::Object(new_obj)
         }
         _ => JsonbValue::Null,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_lazy_document_is_tombstone() {
+        let id = "test_id".to_string();
+
+        // Case 1: Null document (Tombstone)
+        let doc_null = crate::Value::Null;
+        let record_null = (id.clone(), crate::SerdeWrapper(&doc_null));
+        let blob_null = jsonb_schema::to_owned_jsonb(&record_null).unwrap();
+
+        let lazy_null = LazyDocument {
+            id: id.clone(),
+            raw: blob_null.to_vec(),
+        };
+        assert!(lazy_null.is_tombstone());
+
+        // Case 2: Non-null document
+        let doc_obj = serde_to_jsonb(serde_json::json!({"a": 1}));
+        let record_obj = (id.clone(), crate::SerdeWrapper(&doc_obj));
+        let blob_obj = jsonb_schema::to_owned_jsonb(&record_obj).unwrap();
+
+        let lazy_obj = LazyDocument {
+            id: id.clone(),
+            raw: blob_obj.to_vec(),
+        };
+        assert!(!lazy_obj.is_tombstone());
     }
 }
