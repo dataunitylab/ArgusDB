@@ -133,8 +133,8 @@ impl SimpleQueryHandler for ArgusHandler {
                     .map_err(|e| PgWireError::ApiError(Box::new(std::io::Error::other(e))))?;
 
                 let mut rows_data = Vec::new();
-                for (_, doc) in iter {
-                    rows_data.push(doc);
+                for item in iter {
+                    rows_data.push(item.get_value());
                 }
 
                 if rows_data.is_empty() {

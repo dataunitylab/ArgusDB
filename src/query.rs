@@ -1,7 +1,7 @@
 use crate::db::DB;
-use crate::{SerdeWrapper, Value, make_static};
-use jsonb_schema::Number;
+use crate::{ExecutionResult, LazyDocument, SerdeWrapper, Value, make_static};
 use jsonb_schema::jsonpath::JsonPath;
+use jsonb_schema::{Number, OwnedJsonb, RawJsonb, Value as JsonbValue};
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use tracing::{Level, span};
@@ -113,30 +113,30 @@ pub enum Statement<'a> {
 // Iterator implementations for operators
 
 pub struct ScanOperator<'a> {
-    iter: Box<dyn Iterator<Item = (String, Value)> + 'a>,
+    iter: Box<dyn Iterator<Item = ExecutionResult> + 'a>,
 }
 
 impl<'a> ScanOperator<'a> {
-    pub fn new(iter: Box<dyn Iterator<Item = (String, Value)> + 'a>) -> Self {
+    pub fn new(iter: Box<dyn Iterator<Item = ExecutionResult> + 'a>) -> Self {
         ScanOperator { iter }
     }
 }
 
 impl<'a> Iterator for ScanOperator<'a> {
-    type Item = (String, Value);
+    type Item = ExecutionResult;
     fn next(&mut self) -> Option<Self::Item> {
         self.iter.next()
     }
 }
 
 pub struct FilterOperator<'a> {
-    child: Box<dyn Iterator<Item = (String, Value)> + 'a>,
+    child: Box<dyn Iterator<Item = ExecutionResult> + 'a>,
     predicate: Expression<'a>,
 }
 
 impl<'a> FilterOperator<'a> {
     pub fn new(
-        child: Box<dyn Iterator<Item = (String, Value)> + 'a>,
+        child: Box<dyn Iterator<Item = ExecutionResult> + 'a>,
         predicate: Expression<'a>,
     ) -> Self {
         FilterOperator { child, predicate }
@@ -144,11 +144,19 @@ impl<'a> FilterOperator<'a> {
 }
 
 impl<'a> Iterator for FilterOperator<'a> {
-    type Item = (String, Value);
+    type Item = ExecutionResult;
     fn next(&mut self) -> Option<Self::Item> {
-        for (id, doc) in self.child.by_ref() {
-            if evaluate_expression(&self.predicate, &doc) == Value::Bool(true) {
-                return Some((id, doc));
+        for item in self.child.by_ref() {
+            let keep = match &item {
+                ExecutionResult::Value(_, doc) => {
+                    evaluate_expression(&self.predicate, doc) == Value::Bool(true)
+                }
+                ExecutionResult::Lazy(doc) => {
+                    evaluate_expression_lazy(&self.predicate, doc) == Value::Bool(true)
+                }
+            };
+            if keep {
+                return Some(item);
             }
         }
         None
@@ -156,13 +164,13 @@ impl<'a> Iterator for FilterOperator<'a> {
 }
 
 pub struct ProjectOperator<'a> {
-    child: Box<dyn Iterator<Item = (String, Value)> + 'a>,
+    child: Box<dyn Iterator<Item = ExecutionResult> + 'a>,
     projections: Vec<Expression<'a>>,
 }
 
 impl<'a> ProjectOperator<'a> {
     pub fn new(
-        child: Box<dyn Iterator<Item = (String, Value)> + 'a>,
+        child: Box<dyn Iterator<Item = ExecutionResult> + 'a>,
         projections: Vec<Expression<'a>>,
     ) -> Self {
         ProjectOperator { child, projections }
@@ -170,12 +178,16 @@ impl<'a> ProjectOperator<'a> {
 }
 
 impl<'a> Iterator for ProjectOperator<'a> {
-    type Item = (String, Value);
+    type Item = ExecutionResult;
     fn next(&mut self) -> Option<Self::Item> {
-        if let Some((id, doc)) = self.child.next() {
+        if let Some(item) = self.child.next() {
+            let id = item.id().to_string();
             let mut new_doc = BTreeMap::new();
             for expr in &self.projections {
-                let value = evaluate_expression(expr, &doc);
+                let value = match &item {
+                    ExecutionResult::Value(_, doc) => evaluate_expression(expr, doc),
+                    ExecutionResult::Lazy(doc) => evaluate_expression_lazy(expr, doc),
+                };
                 match expr {
                     Expression::FieldReference(_, raw) => {
                         new_doc.insert(raw.to_string(), value);
@@ -188,20 +200,20 @@ impl<'a> Iterator for ProjectOperator<'a> {
                     }
                 }
             }
-            return Some((id, Value::Object(new_doc)));
+            return Some(ExecutionResult::Value(id, Value::Object(new_doc)));
         }
         None
     }
 }
 
 pub struct LimitOperator<'a> {
-    child: Box<dyn Iterator<Item = (String, Value)> + 'a>,
+    child: Box<dyn Iterator<Item = ExecutionResult> + 'a>,
     limit: usize,
     count: usize,
 }
 
 impl<'a> LimitOperator<'a> {
-    pub fn new(child: Box<dyn Iterator<Item = (String, Value)> + 'a>, limit: usize) -> Self {
+    pub fn new(child: Box<dyn Iterator<Item = ExecutionResult> + 'a>, limit: usize) -> Self {
         LimitOperator {
             child,
             limit,
@@ -211,7 +223,7 @@ impl<'a> LimitOperator<'a> {
 }
 
 impl<'a> Iterator for LimitOperator<'a> {
-    type Item = (String, Value);
+    type Item = ExecutionResult;
     fn next(&mut self) -> Option<Self::Item> {
         if self.count >= self.limit {
             return None;
@@ -225,13 +237,13 @@ impl<'a> Iterator for LimitOperator<'a> {
 }
 
 pub struct OffsetOperator<'a> {
-    child: Box<dyn Iterator<Item = (String, Value)> + 'a>,
+    child: Box<dyn Iterator<Item = ExecutionResult> + 'a>,
     offset: usize,
     skipped: usize,
 }
 
 impl<'a> OffsetOperator<'a> {
-    pub fn new(child: Box<dyn Iterator<Item = (String, Value)> + 'a>, offset: usize) -> Self {
+    pub fn new(child: Box<dyn Iterator<Item = ExecutionResult> + 'a>, offset: usize) -> Self {
         OffsetOperator {
             child,
             offset,
@@ -241,7 +253,7 @@ impl<'a> OffsetOperator<'a> {
 }
 
 impl<'a> Iterator for OffsetOperator<'a> {
-    type Item = (String, Value);
+    type Item = ExecutionResult;
     fn next(&mut self) -> Option<Self::Item> {
         while self.skipped < self.offset {
             self.child.next()?;
@@ -252,6 +264,94 @@ impl<'a> Iterator for OffsetOperator<'a> {
 }
 
 // Evaluator
+
+// Lazy Evaluator
+
+fn evaluate_expression_lazy<'a>(expr: &Expression<'a>, doc: &LazyDocument) -> Value {
+    match expr {
+        Expression::FieldReference(parts, _) => {
+            // Lazy optimization: only extract the requested field using RawJsonb
+            // doc.raw is [id, document]
+            let raw_root = RawJsonb::new(&doc.raw);
+            // Get the document part (index 1)
+            // Note: RawJsonb::get_by_index returns Result<Option<OwnedJsonb>>
+            if let Ok(Some(doc_owned)) = raw_root.get_by_index(1) {
+                if let Some(field_bytes) = get_path_lazy(doc_owned, parts) {
+                    // Decode only the found field
+                    if let Ok(val) = jsonb_schema::from_slice(&field_bytes) {
+                        return make_static(&val);
+                    }
+                }
+            }
+            Value::Null
+        }
+        Expression::JsonPath(json_path, _) => {
+            // For JSON path, we still need to partially decode or at least traverse.
+            // But jsonb_schema might not support running path on raw bytes easily without wrapper?
+            // Actually, the previous code in evaluate_expression used:
+            // let wrapper = SerdeWrapper(doc); to_owned_jsonb(&wrapper).as_raw().select_by_path(...)
+            // Here we have bytes.
+            let raw_root = RawJsonb::new(&doc.raw);
+            if let Ok(Some(doc_owned)) = raw_root.get_by_index(1) {
+                if let Ok(results) = doc_owned.as_raw().select_by_path(json_path) {
+                    if results.is_empty() {
+                        Value::Null
+                    } else if results.len() == 1 {
+                        let owned = results.into_iter().next().unwrap();
+                        if let Ok(val) = jsonb_schema::from_slice(&owned.to_vec()) {
+                            make_static(&val)
+                        } else {
+                            Value::Null
+                        }
+                    } else {
+                        let mut arr = Vec::new();
+                        for owned in results {
+                            if let Ok(val) = jsonb_schema::from_slice(&owned.to_vec()) {
+                                arr.push(make_static(&val));
+                            }
+                        }
+                        Value::Array(arr)
+                    }
+                } else {
+                    Value::Null
+                }
+            } else {
+                Value::Null
+            }
+        }
+        Expression::Literal(val) => val.clone(),
+        Expression::Binary { left, op, right } => {
+            let l_val = evaluate_expression_lazy(left, doc);
+            let r_val = evaluate_expression_lazy(right, doc);
+            evaluate_binary(&l_val, op, &r_val)
+        }
+        Expression::Logical { left, op, right } => {
+            let l_val = evaluate_expression_lazy(left, doc);
+            let r_val = evaluate_expression_lazy(right, doc);
+            evaluate_logical(&l_val, op, &r_val)
+        }
+        Expression::Function { func, args } => {
+            let vals: Vec<Value> = args
+                .iter()
+                .map(|arg| evaluate_expression_lazy(arg, doc))
+                .collect();
+            evaluate_function(func, &vals)
+        }
+    }
+}
+
+fn get_path_lazy(mut current: OwnedJsonb, parts: &[&str]) -> Option<Vec<u8>> {
+    for part in parts {
+        let raw = current.as_raw();
+        match raw.get_by_name(part, false) {
+            Ok(Some(next)) => {
+                current = next;
+            }
+            _ => return None,
+        }
+    }
+    Some(current.to_vec())
+}
 
 fn evaluate_expression<'a>(expr: &Expression<'a>, doc: &Value) -> Value {
     match expr {
@@ -500,7 +600,7 @@ fn compare_values(left: &Value, right: &Value) -> Option<Ordering> {
 pub fn execute_plan<'a>(
     plan: LogicalPlan<'a>,
     db: &'a DB,
-) -> Result<Box<dyn Iterator<Item = (String, Value)> + 'a>, String> {
+) -> Result<Box<dyn Iterator<Item = ExecutionResult> + 'a>, String> {
     let span = span!(Level::DEBUG, "plan", plan = ?plan);
     let _enter = span.enter();
 
@@ -540,36 +640,36 @@ mod tests {
     }
 
     fn make_json_path(s: &str) -> Expression<'_> {
-        // This is tricky for tests because Expression borrows 'a.
-        // We will need to box leak the string or ensure it lives long enough.
-        // For simple tests, we can just use string literals which are 'static.
-        // But JsonPath parsing requires byte slice.
         Expression::JsonPath(
             Box::new(jsonb_schema::jsonpath::parse_json_path(s.as_bytes()).unwrap()),
             s,
         )
     }
 
+    fn to_exec_result(id: &str, val: Value) -> ExecutionResult {
+        ExecutionResult::Value(id.to_string(), val)
+    }
+
     #[test]
     fn test_scan() {
         let data = vec![
-            ("1".to_string(), serde_to_jsonb(json!({"a": 1}))),
-            ("2".to_string(), serde_to_jsonb(json!({"a": 2}))),
+            to_exec_result("1", serde_to_jsonb(json!({"a": 1}))),
+            to_exec_result("2", serde_to_jsonb(json!({"a": 2}))),
         ];
         let source_iter = Box::new(data.into_iter());
         let mut scan = ScanOperator::new(source_iter);
 
-        assert_eq!(scan.next().unwrap().0, "1");
-        assert_eq!(scan.next().unwrap().0, "2");
+        assert_eq!(scan.next().unwrap().id(), "1");
+        assert_eq!(scan.next().unwrap().id(), "2");
         assert!(scan.next().is_none());
     }
 
     #[test]
     fn test_filter() {
         let data = vec![
-            ("1".to_string(), serde_to_jsonb(json!({"a": 1, "b": "yes"}))),
-            ("2".to_string(), serde_to_jsonb(json!({"a": 2, "b": "no"}))),
-            ("3".to_string(), serde_to_jsonb(json!({"a": 3, "b": "yes"}))),
+            to_exec_result("1", serde_to_jsonb(json!({"a": 1, "b": "yes"}))),
+            to_exec_result("2", serde_to_jsonb(json!({"a": 2, "b": "no"}))),
+            to_exec_result("3", serde_to_jsonb(json!({"a": 3, "b": "yes"}))),
         ];
         let source = Box::new(data.into_iter());
 
@@ -589,16 +689,16 @@ mod tests {
 
         let mut filter = FilterOperator::new(source, predicate);
 
-        let (id, _) = filter.next().unwrap();
-        assert_eq!(id, "3");
+        let item = filter.next().unwrap();
+        assert_eq!(item.id(), "3");
         assert!(filter.next().is_none());
     }
 
     #[test]
     fn test_jsonpath() {
         let data = vec![
-            ("1".to_string(), serde_to_jsonb(json!({"a": {"b": 10}}))),
-            ("2".to_string(), serde_to_jsonb(json!({"a": {"b": 20}}))),
+            to_exec_result("1", serde_to_jsonb(json!({"a": {"b": 10}}))),
+            to_exec_result("2", serde_to_jsonb(json!({"a": {"b": 20}}))),
         ];
         let source = Box::new(data.into_iter());
 
@@ -611,15 +711,15 @@ mod tests {
 
         let mut filter = FilterOperator::new(source, predicate);
 
-        let (id, _) = filter.next().unwrap();
-        assert_eq!(id, "2");
+        let item = filter.next().unwrap();
+        assert_eq!(item.id(), "2");
         assert!(filter.next().is_none());
     }
 
     #[test]
     fn test_project() {
-        let data = vec![(
-            "1".to_string(),
+        let data = vec![to_exec_result(
+            "1",
             serde_to_jsonb(json!({"a": 1, "b": 2, "c": 3})),
         )];
         let source = Box::new(data.into_iter());
@@ -628,7 +728,8 @@ mod tests {
 
         let mut project = ProjectOperator::new(source, projections);
 
-        let (_, doc) = project.next().unwrap();
+        let item = project.next().unwrap();
+        let doc = item.get_value();
         // Check fields using helper since as_object returns BTreeMap
         if let JsonbValue::Object(obj) = doc {
             assert_eq!(obj.len(), 2);
@@ -643,18 +744,18 @@ mod tests {
     #[test]
     fn test_limit_offset() {
         let data = vec![
-            ("1".to_string(), serde_to_jsonb(json!({"a": 1}))),
-            ("2".to_string(), serde_to_jsonb(json!({"a": 2}))),
-            ("3".to_string(), serde_to_jsonb(json!({"a": 3}))),
-            ("4".to_string(), serde_to_jsonb(json!({"a": 4}))),
+            to_exec_result("1", serde_to_jsonb(json!({"a": 1}))),
+            to_exec_result("2", serde_to_jsonb(json!({"a": 2}))),
+            to_exec_result("3", serde_to_jsonb(json!({"a": 3}))),
+            to_exec_result("4", serde_to_jsonb(json!({"a": 4}))),
         ];
         let source = Box::new(data.into_iter());
 
         let offset_op = Box::new(OffsetOperator::new(source, 1));
         let mut limit_op = LimitOperator::new(offset_op, 2);
 
-        assert_eq!(limit_op.next().unwrap().0, "2");
-        assert_eq!(limit_op.next().unwrap().0, "3");
+        assert_eq!(limit_op.next().unwrap().id(), "2");
+        assert_eq!(limit_op.next().unwrap().id(), "3");
         assert!(limit_op.next().is_none());
     }
 

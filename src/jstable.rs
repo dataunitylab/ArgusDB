@@ -1,5 +1,6 @@
 use crate::schema::{InstanceType, Schema, SchemaExt};
-use crate::{SerdeWrapper, Value, make_static};
+use crate::{LazyDocument, SerdeWrapper, Value, make_static};
+use jsonb_schema::{OwnedJsonb, RawJsonb};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -117,14 +118,14 @@ impl JSTable {
     }
 }
 
-pub struct JSTableIterator {
+pub struct JSTableLazyIterator {
     reader: BufReader<File>,
     pub timestamp: u64,
     pub collection: String,
     pub schema: Schema,
 }
 
-impl JSTableIterator {
+impl JSTableLazyIterator {
     pub fn new(path: &str) -> io::Result<Self> {
         let summary_path = format!("{}.summary", path);
         let data_path = format!("{}.data", path);
@@ -167,8 +168,8 @@ impl JSTableIterator {
     }
 }
 
-impl Iterator for JSTableIterator {
-    type Item = io::Result<(String, Value)>;
+impl Iterator for JSTableLazyIterator {
+    type Item = io::Result<LazyDocument>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let mut len_buf = [0u8; 4];
@@ -180,30 +181,38 @@ impl Iterator for JSTableIterator {
                     return Some(Err(e));
                 }
 
-                let record_val = match jsonb_schema::from_slice(&record_blob)
-                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
-                {
-                    Ok(v) => v,
-                    Err(e) => return Some(Err(e)),
+                // Extract ID eagerly using RawJsonb to avoid full deserialization
+                // record_blob is [id, doc]
+                let id = {
+                    let raw = RawJsonb::new(&record_blob);
+                    if let Ok(Some(id_owned)) = raw.get_by_index(0) {
+                        // id_owned is OwnedJsonb of the string.
+                        // We need to decode just this string.
+                        let id_bytes = id_owned.to_vec();
+                        match jsonb_schema::from_slice(&id_bytes) {
+                            Ok(jsonb_schema::Value::String(s)) => s.to_string(),
+                            Ok(_) => {
+                                return Some(Err(io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    "ID is not a string",
+                                )));
+                            }
+                            Err(e) => {
+                                return Some(Err(io::Error::new(io::ErrorKind::InvalidData, e)));
+                            }
+                        }
+                    } else {
+                        return Some(Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "Failed to get ID from record",
+                        )));
+                    }
                 };
 
-                // record_val is [id, doc] (as jsonb Array).
-                let static_val = make_static(&record_val);
-
-                if let jsonb_schema::Value::Array(mut arr) = static_val
-                    && arr.len() == 2
-                {
-                    let doc = arr.pop().unwrap(); // Last element is doc
-                    let id_val = arr.pop().unwrap(); // First element is id
-                    if let jsonb_schema::Value::String(id_cow) = id_val {
-                        return Some(Ok((id_cow.into_owned(), doc)));
-                    }
-                }
-
-                Some(Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "Invalid record structure",
-                )))
+                Some(Ok(LazyDocument {
+                    id,
+                    raw: record_blob,
+                }))
             }
             Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => None,
             Err(e) => Some(Err(e)),
@@ -211,11 +220,71 @@ impl Iterator for JSTableIterator {
     }
 }
 
+pub struct JSTableIterator {
+    inner: JSTableLazyIterator,
+}
+
+impl JSTableIterator {
+    pub fn new(path: &str) -> io::Result<Self> {
+        Ok(Self {
+            inner: JSTableLazyIterator::new(path)?,
+        })
+    }
+
+    pub fn seek(&mut self, offset: u64) -> io::Result<()> {
+        self.inner.seek(offset)
+    }
+
+    // Accessors delegated to inner
+    pub fn timestamp(&self) -> u64 {
+        self.inner.timestamp
+    }
+    pub fn collection(&self) -> &str {
+        &self.inner.collection
+    }
+    pub fn schema(&self) -> &Schema {
+        &self.inner.schema
+    }
+}
+
+impl Iterator for JSTableIterator {
+    type Item = io::Result<(String, Value)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.inner.next() {
+            Some(Ok(lazy_doc)) => {
+                // Fully decode
+                let val = match jsonb_schema::from_slice(&lazy_doc.raw)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+                {
+                    Ok(v) => v,
+                    Err(e) => return Some(Err(e)),
+                };
+
+                let static_val = make_static(&val);
+                if let jsonb_schema::Value::Array(mut arr) = static_val
+                    && arr.len() == 2
+                {
+                    let doc = arr.pop().unwrap(); // Last element is doc
+                    // lazy_doc.id is already extracted
+                    return Some(Ok((lazy_doc.id, doc)));
+                }
+                Some(Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Invalid record structure during materialization",
+                )))
+            }
+            Some(Err(e)) => Some(Err(e)),
+            None => None,
+        }
+    }
+}
+
 pub fn read_jstable(path: &str) -> io::Result<JSTable> {
     let iterator = JSTableIterator::new(path)?;
-    let timestamp = iterator.timestamp;
-    let collection = iterator.collection.clone();
-    let schema = iterator.schema.clone();
+    let timestamp = iterator.timestamp();
+    let collection = iterator.collection().to_string();
+    let schema = iterator.schema().clone();
 
     let mut documents = BTreeMap::new();
     for result in iterator {
@@ -413,8 +482,8 @@ mod tests {
         jstable.write(file_path.to_str().unwrap(), 1024).unwrap();
 
         let iterator = JSTableIterator::new(file_path.to_str().unwrap())?;
-        assert_eq!(iterator.timestamp, 12345);
-        assert_eq!(iterator.collection, "test_col");
+        assert_eq!(iterator.timestamp(), 12345);
+        assert_eq!(iterator.collection(), "test_col");
 
         let mut count = 0;
         let mut ids = Vec::new();

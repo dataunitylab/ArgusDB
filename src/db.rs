@@ -1,3 +1,4 @@
+use crate::ExecutionResult;
 use crate::Value;
 use crate::jstable;
 use crate::log::{Log, LogEntry, Logger, NullLogger, Operation};
@@ -10,14 +11,14 @@ use std::path::PathBuf;
 use uuid::Uuid;
 use xorf::{BinaryFuse8, Filter};
 
-type SourceIterator<'a> = Peekable<Box<dyn Iterator<Item = (String, Value)> + 'a>>;
+type SourceIterator<'a> = Peekable<Box<dyn Iterator<Item = ExecutionResult> + 'a>>;
 
 struct MergedIterator<'a> {
     sources: Vec<SourceIterator<'a>>,
 }
 
 impl<'a> Iterator for MergedIterator<'a> {
-    type Item = (String, Value);
+    type Item = ExecutionResult;
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
@@ -25,12 +26,13 @@ impl<'a> Iterator for MergedIterator<'a> {
             let mut min_id: Option<String> = None;
 
             for source in &mut self.sources {
-                if let Some((id, _)) = source.peek() {
+                if let Some(res) = source.peek() {
+                    let id = res.id();
                     match &min_id {
-                        None => min_id = Some(id.clone()),
+                        None => min_id = Some(id.to_string()),
                         Some(current_min) => {
-                            if id < current_min {
-                                min_id = Some(id.clone());
+                            if id < current_min.as_str() {
+                                min_id = Some(id.to_string());
                             }
                         }
                     }
@@ -40,30 +42,54 @@ impl<'a> Iterator for MergedIterator<'a> {
             let min_id = min_id?; // If None, all exhausted
 
             // Consume from sources
-            let mut result: Option<Value> = None;
+            let mut result: Option<ExecutionResult> = None;
 
             for source in &mut self.sources {
-                let is_match = if let Some((id, _)) = source.peek() {
-                    id == &min_id
+                let is_match = if let Some(res) = source.peek() {
+                    res.id() == &min_id
                 } else {
                     false
                 };
 
                 if is_match {
-                    let (_, doc) = source.next().unwrap();
+                    let item = source.next().unwrap();
                     if result.is_none() {
                         // First match (highest priority)
-                        result = Some(doc);
+                        result = Some(item);
                     }
                     // Else: ignored (shadowed)
                 }
             }
 
             // Check for tombstone (Null)
-            if let Some(doc) = result {
-                use jsonb_schema::Value as JsonbValue;
-                if !matches!(doc, JsonbValue::Null) {
-                    return Some((min_id, doc));
+            if let Some(res) = result {
+                match &res {
+                    ExecutionResult::Value(_, val) => {
+                        use jsonb_schema::Value as JsonbValue;
+                        if !matches!(val, JsonbValue::Null) {
+                            return Some(res);
+                        }
+                    }
+                    ExecutionResult::Lazy(doc) => {
+                        // We need to check if it's a tombstone.
+                        // This requires checking the 'doc' part.
+                        // If we are lazy, we might not want to decode yet.
+                        // But if it is a tombstone, we shouldn't yield it.
+                        // So we MUST check if it is Null.
+                        // Optimized check for Null in jsonb:
+                        // Null is encoded as a specific byte sequence or type.
+                        // But doc.raw is [id, doc].
+                        // We can decode just the doc part or use get_value() for now to be safe.
+                        // If we implement is_null() on LazyDocument later, we can optimize.
+                        // For now, let's decode to check for tombstone.
+                        // This is a partial eager decode, but unavoidable for correctness of deletes.
+                        let val = res.get_value();
+                        use jsonb_schema::Value as JsonbValue;
+                        if !matches!(val, JsonbValue::Null) {
+                            // We return the Lazy result, not the decoded value, to keep laziness for downstream
+                            return Some(res);
+                        }
+                    }
                 }
             }
             // If null (tombstone), loop again
@@ -241,7 +267,7 @@ impl Collection {
         self.jstable_count = 1;
     }
 
-    fn scan(&self) -> impl Iterator<Item = (String, Value)> + '_ {
+    fn scan(&self) -> impl Iterator<Item = ExecutionResult> + '_ {
         let mut sources: Vec<SourceIterator> = Vec::new();
 
         // 1. MemTable Iterator (Priority 0 - Highest)
@@ -249,16 +275,19 @@ impl Collection {
             .memtable
             .documents
             .iter()
-            .map(|(k, v)| (k.clone(), v.clone()));
-        sources.push((Box::new(mem_iter) as Box<dyn Iterator<Item = (String, Value)>>).peekable());
+            .map(|(k, v)| ExecutionResult::Value(k.clone(), v.clone()));
+        sources.push((Box::new(mem_iter) as Box<dyn Iterator<Item = ExecutionResult>>).peekable());
 
         // 2. JSTable Iterators (Newer to Older)
         for i in (0..self.jstable_count).rev() {
             let path = self.dir.join(format!("jstable-{}", i));
-            if let Ok(iter) = jstable::JSTableIterator::new(path.to_str().unwrap()) {
-                let iter = iter.map(|r| r.unwrap());
+            if let Ok(iter) = jstable::JSTableLazyIterator::new(path.to_str().unwrap()) {
+                let iter = iter.map(|r| {
+                    let doc = r.unwrap();
+                    ExecutionResult::Lazy(doc)
+                });
                 sources
-                    .push((Box::new(iter) as Box<dyn Iterator<Item = (String, Value)>>).peekable());
+                    .push((Box::new(iter) as Box<dyn Iterator<Item = ExecutionResult>>).peekable());
             }
         }
 
@@ -359,7 +388,7 @@ impl DB {
                         if let Ok(iter) =
                             jstable::JSTableIterator::new(jstable_base_path.to_str().unwrap())
                         {
-                            Some(iter.collection)
+                            Some(iter.collection().to_string())
                         } else {
                             None
                         }
@@ -476,9 +505,9 @@ impl DB {
     pub fn scan(
         &self,
         collection: &str,
-    ) -> Result<Box<dyn Iterator<Item = (String, Value)> + '_>, String> {
+    ) -> Result<Box<dyn Iterator<Item = ExecutionResult> + '_>, String> {
         self.get_collection(collection)
-            .map(|c| Box::new(c.scan()) as Box<dyn Iterator<Item = (String, Value)> + '_>)
+            .map(|c| Box::new(c.scan()) as Box<dyn Iterator<Item = ExecutionResult> + '_>)
     }
 
     pub fn get(&self, collection: &str, id: &str) -> Result<Option<Value>, String> {
@@ -716,7 +745,11 @@ mod tests {
         db.insert("test", serde_to_jsonb(json!({"val": 10})))
             .unwrap();
 
-        let results: HashMap<String, Value> = db.scan("test").unwrap().collect();
+        let results: HashMap<String, Value> = db
+            .scan("test")
+            .unwrap()
+            .map(|r| (r.id().to_string(), r.get_value()))
+            .collect();
         assert_eq!(results.len(), 11);
     }
 

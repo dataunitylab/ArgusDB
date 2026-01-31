@@ -13,6 +13,45 @@ use std::collections::BTreeMap;
 
 pub type Value = JsonbValue<'static>;
 
+#[derive(Debug, Clone)]
+pub struct LazyDocument {
+    pub id: String,
+    pub raw: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+pub enum ExecutionResult {
+    Value(String, Value),
+    Lazy(LazyDocument),
+}
+
+impl ExecutionResult {
+    pub fn id(&self) -> &str {
+        match self {
+            ExecutionResult::Value(id, _) => id,
+            ExecutionResult::Lazy(doc) => &doc.id,
+        }
+    }
+
+    pub fn get_value(&self) -> Value {
+        match self {
+            ExecutionResult::Value(_, v) => v.clone(),
+            ExecutionResult::Lazy(doc) => {
+                // Decode the raw blob [id, document]
+                if let Ok(val) = jsonb_schema::from_slice(&doc.raw) {
+                    let static_val = make_static(&val);
+                    if let JsonbValue::Array(mut arr) = static_val
+                        && arr.len() == 2
+                    {
+                        return arr.pop().unwrap(); // doc
+                    }
+                }
+                JsonbValue::Null
+            }
+        }
+    }
+}
+
 // Public wrapper for serialization
 pub struct SerdeWrapper<'a>(pub &'a Value);
 
