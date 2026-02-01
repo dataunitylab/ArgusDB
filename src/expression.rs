@@ -70,6 +70,38 @@ pub enum ScalarFunction {
 
 // Lazy Evaluator
 
+pub fn evaluate_to_f64_lazy<'a>(expr: &Expression<'a>, doc: &LazyDocument) -> Option<f64> {
+    match expr {
+        Expression::FieldReference(parts, _) => {
+            let raw_root = RawJsonb::new(&doc.raw);
+            if let Ok(Some(doc_owned)) = raw_root.get_by_index(1) {
+                if let Some(field_bytes) = get_path_lazy(doc_owned, parts) {
+                    if let Ok(val) = jsonb_schema::from_slice(&field_bytes) {
+                        match val {
+                            jsonb_schema::Value::Number(n) => get_f64_from_number(&n),
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
+        Expression::Literal(val) => match val {
+            Value::Number(n) => get_f64_from_number(n),
+            _ => None,
+        },
+        _ => match evaluate_expression_lazy(expr, doc) {
+            Value::Number(n) => get_f64_from_number(&n),
+            _ => None,
+        },
+    }
+}
+
 pub fn evaluate_expression_lazy<'a>(expr: &Expression<'a>, doc: &LazyDocument) -> Value {
     match expr {
         Expression::FieldReference(parts, _) => {
@@ -214,7 +246,7 @@ pub fn evaluate_expression<'a>(expr: &Expression<'a>, doc: &Value) -> Value {
     }
 }
 
-fn get_f64_from_number(n: &Number) -> Option<f64> {
+pub fn get_f64_from_number(n: &Number) -> Option<f64> {
     match n {
         Number::Int64(i) => Some(*i as f64),
         Number::UInt64(u) => Some(*u as f64),
