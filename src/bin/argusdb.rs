@@ -37,6 +37,22 @@ struct Args {
     #[arg(short, long)]
     port: Option<u16>,
 
+    /// Memtable threshold
+    #[arg(long)]
+    memtable_threshold: Option<usize>,
+
+    /// JSTable threshold
+    #[arg(long)]
+    jstable_threshold: Option<u64>,
+
+    /// JSTable directory
+    #[arg(long)]
+    jstable_dir: Option<String>,
+
+    /// Index threshold
+    #[arg(long)]
+    index_threshold: Option<u64>,
+
     /// Print help
     #[arg(long, action = clap::ArgAction::Help)]
     help: Option<bool>,
@@ -241,6 +257,24 @@ async fn main() {
     }
     if let Some(port) = args.port {
         builder = builder.set_override("port", port).unwrap();
+    }
+    if let Some(memtable_threshold) = args.memtable_threshold {
+        builder = builder
+            .set_override("memtable_threshold", memtable_threshold as i64)
+            .unwrap();
+    }
+    if let Some(jstable_threshold) = args.jstable_threshold {
+        builder = builder
+            .set_override("jstable_threshold", jstable_threshold as i64)
+            .unwrap();
+    }
+    if let Some(jstable_dir) = args.jstable_dir {
+        builder = builder.set_override("jstable_dir", jstable_dir).unwrap();
+    }
+    if let Some(index_threshold) = args.index_threshold {
+        builder = builder
+            .set_override("index_threshold", index_threshold as i64)
+            .unwrap();
     }
 
     let subscriber = tracing_subscriber::fmt()
