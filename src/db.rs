@@ -1,8 +1,8 @@
-use crate::ExecutionResult;
-use crate::Value;
+use crate::expression::{Expression, evaluate_expression};
 use crate::jstable;
 use crate::log::{Log, LogEntry, Logger, NullLogger, Operation};
 use crate::storage::MemTable;
+use crate::{ExecutionResult, Value};
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::fs;
@@ -15,7 +15,10 @@ type SourceIterator<'a> = Peekable<Box<dyn Iterator<Item = ExecutionResult> + 'a
 
 struct MergedIterator<'a> {
     sources: Vec<SourceIterator<'a>>,
+    predicate: Option<Expression<'a>>,
 }
+
+use crate::expression::evaluate_expression_lazy;
 
 impl<'a> Iterator for MergedIterator<'a> {
     type Item = ExecutionResult;
@@ -46,7 +49,7 @@ impl<'a> Iterator for MergedIterator<'a> {
 
             for source in &mut self.sources {
                 let is_match = if let Some(res) = source.peek() {
-                    res.id() == &min_id
+                    res.id() == min_id
                 } else {
                     false
                 };
@@ -67,17 +70,29 @@ impl<'a> Iterator for MergedIterator<'a> {
                     ExecutionResult::Value(_, val) => {
                         use jsonb_schema::Value as JsonbValue;
                         if !matches!(val, JsonbValue::Null) {
+                            // Check predicate if exists
+                            if let Some(pred) = &self.predicate
+                                && evaluate_expression(pred, val) != Value::Bool(true)
+                            {
+                                continue;
+                            }
                             return Some(res);
                         }
                     }
                     ExecutionResult::Lazy(doc) => {
                         if !doc.is_tombstone() {
+                            // Check predicate if exists
+                            if let Some(pred) = &self.predicate
+                                && evaluate_expression_lazy(pred, doc) != Value::Bool(true)
+                            {
+                                continue;
+                            }
                             return Some(res);
                         }
                     }
                 }
             }
-            // If null (tombstone), loop again
+            // If null (tombstone) or filtered out, loop again
         }
     }
 }
@@ -252,7 +267,10 @@ impl Collection {
         self.jstable_count = 1;
     }
 
-    fn scan(&self) -> impl Iterator<Item = ExecutionResult> + '_ {
+    fn scan<'a>(
+        &'a self,
+        predicate: Option<Expression<'a>>,
+    ) -> impl Iterator<Item = ExecutionResult> + 'a {
         let mut sources: Vec<SourceIterator> = Vec::new();
 
         // 1. MemTable Iterator (Priority 0 - Highest)
@@ -261,6 +279,7 @@ impl Collection {
             .documents
             .iter()
             .map(|(k, v)| ExecutionResult::Value(k.clone(), v.clone()));
+
         sources.push((Box::new(mem_iter) as Box<dyn Iterator<Item = ExecutionResult>>).peekable());
 
         // 2. JSTable Iterators (Newer to Older)
@@ -276,7 +295,7 @@ impl Collection {
             }
         }
 
-        MergedIterator { sources }
+        MergedIterator { sources, predicate }
     }
 
     fn get(&self, id: &str) -> Option<Value> {
@@ -487,12 +506,13 @@ impl DB {
             .map(|c| c.update(id, doc))
     }
 
-    pub fn scan(
-        &self,
+    pub fn scan<'a>(
+        &'a self,
         collection: &str,
-    ) -> Result<Box<dyn Iterator<Item = ExecutionResult> + '_>, String> {
+        predicate: Option<Expression<'a>>,
+    ) -> Result<Box<dyn Iterator<Item = ExecutionResult> + 'a>, String> {
         self.get_collection(collection)
-            .map(|c| Box::new(c.scan()) as Box<dyn Iterator<Item = ExecutionResult> + '_>)
+            .map(|c| Box::new(c.scan(predicate)) as Box<dyn Iterator<Item = ExecutionResult> + 'a>)
     }
 
     pub fn get(&self, collection: &str, id: &str) -> Result<Option<Value>, String> {
@@ -731,7 +751,7 @@ mod tests {
             .unwrap();
 
         let results: HashMap<String, Value> = db
-            .scan("test")
+            .scan("test", None)
             .unwrap()
             .map(|r| (r.id().to_string(), r.get_value()))
             .collect();

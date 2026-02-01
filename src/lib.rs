@@ -1,11 +1,14 @@
 pub mod bench_utils;
 pub mod db;
+pub mod expression;
 pub mod jstable;
 pub mod log;
 pub mod parser;
 pub mod query;
 pub mod schema;
 pub mod storage;
+
+pub use expression::*;
 
 use jsonb_schema::{Number, RawJsonb, Value as JsonbValue};
 use serde::{Serialize, Serializer};

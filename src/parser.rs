@@ -1,6 +1,6 @@
-use crate::query::{
-    BinaryOperator, Expression, LogicalOperator, LogicalPlan, ScalarFunction, Statement,
-};
+use crate::expression::{BinaryOperator, Expression, LogicalOperator, ScalarFunction};
+use crate::query::{LogicalPlan, Statement};
+
 use crate::{Value, serde_to_jsonb};
 use bumpalo::Bump;
 use sqlparser::ast::{
