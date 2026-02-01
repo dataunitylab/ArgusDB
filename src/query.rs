@@ -207,12 +207,12 @@ pub fn execute_plan<'a>(
 
     match plan {
         LogicalPlan::Scan { collection } => {
-            let iter = db.scan(&collection, None)?;
+            let iter = db.scan(&collection, None, None)?;
             Ok(Box::new(ScanOperator::new(iter)))
         }
         LogicalPlan::Filter { input, predicate } => match *input {
             LogicalPlan::Scan { collection } => {
-                let iter = db.scan(&collection, Some(predicate))?;
+                let iter = db.scan(&collection, Some(predicate), None)?;
                 Ok(Box::new(ScanOperator::new(iter)))
             }
             other_input => {
@@ -221,8 +221,38 @@ pub fn execute_plan<'a>(
             }
         },
         LogicalPlan::Project { input, projections } => {
-            let child = execute_plan(*input, db)?;
-            Ok(Box::new(ProjectOperator::new(child, projections)))
+            match *input {
+                LogicalPlan::Scan { collection } => {
+                    // Pushdown project to Scan
+                    let iter = db.scan(&collection, None, Some(projections))?;
+                    Ok(Box::new(ScanOperator::new(iter)))
+                }
+                LogicalPlan::Filter {
+                    input: inner,
+                    predicate,
+                } => {
+                    match *inner {
+                        LogicalPlan::Scan { collection } => {
+                            // Pushdown project + filter to Scan
+                            let iter = db.scan(&collection, Some(predicate), Some(projections))?;
+                            Ok(Box::new(ScanOperator::new(iter)))
+                        }
+                        other_inner => {
+                            // Standard execution
+                            let input_node = LogicalPlan::Filter {
+                                input: Box::new(other_inner),
+                                predicate,
+                            };
+                            let child = execute_plan(input_node, db)?;
+                            Ok(Box::new(ProjectOperator::new(child, projections)))
+                        }
+                    }
+                }
+                other_input => {
+                    let child = execute_plan(other_input, db)?;
+                    Ok(Box::new(ProjectOperator::new(child, projections)))
+                }
+            }
         }
         LogicalPlan::Limit { input, limit } => {
             let child = execute_plan(*input, db)?;

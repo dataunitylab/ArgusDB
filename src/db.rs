@@ -3,7 +3,7 @@ use crate::jstable;
 use crate::log::{Log, LogEntry, Logger, NullLogger, Operation};
 use crate::storage::MemTable;
 use crate::{ExecutionResult, Value};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Debug;
 use std::fs;
 use std::iter::Peekable;
@@ -16,6 +16,7 @@ type SourceIterator<'a> = Peekable<Box<dyn Iterator<Item = ExecutionResult> + 'a
 struct MergedIterator<'a> {
     sources: Vec<SourceIterator<'a>>,
     predicate: Option<Expression<'a>>,
+    projections: Option<Vec<Expression<'a>>>,
 }
 
 use crate::expression::evaluate_expression_lazy;
@@ -71,22 +72,58 @@ impl<'a> Iterator for MergedIterator<'a> {
                         use jsonb_schema::Value as JsonbValue;
                         if !matches!(val, JsonbValue::Null) {
                             // Check predicate if exists
-                            if let Some(pred) = &self.predicate
-                                && evaluate_expression(pred, val) != Value::Bool(true)
-                            {
-                                continue;
+                            if let Some(pred) = &self.predicate {
+                                if evaluate_expression(pred, val) != Value::Bool(true) {
+                                    continue;
+                                }
                             }
+
+                            if let Some(projs) = &self.projections {
+                                let mut new_doc = BTreeMap::new();
+                                for expr in projs {
+                                    let v = evaluate_expression(expr, val);
+                                    let key = match expr {
+                                        Expression::FieldReference(_, raw) => raw.to_string(),
+                                        Expression::JsonPath(_, raw) => raw.to_string(),
+                                        _ => "col".to_string(),
+                                    };
+                                    new_doc.insert(key, v);
+                                }
+                                return Some(ExecutionResult::Value(
+                                    res.id().to_string(),
+                                    Value::Object(new_doc),
+                                ));
+                            }
+
                             return Some(res);
                         }
                     }
                     ExecutionResult::Lazy(doc) => {
                         if !doc.is_tombstone() {
                             // Check predicate if exists
-                            if let Some(pred) = &self.predicate
-                                && evaluate_expression_lazy(pred, doc) != Value::Bool(true)
-                            {
-                                continue;
+                            if let Some(pred) = &self.predicate {
+                                if evaluate_expression_lazy(pred, doc) != Value::Bool(true) {
+                                    continue;
+                                }
                             }
+
+                            if let Some(projs) = &self.projections {
+                                let mut new_doc = BTreeMap::new();
+                                for expr in projs {
+                                    let v = evaluate_expression_lazy(expr, doc);
+                                    let key = match expr {
+                                        Expression::FieldReference(_, raw) => raw.to_string(),
+                                        Expression::JsonPath(_, raw) => raw.to_string(),
+                                        _ => "col".to_string(),
+                                    };
+                                    new_doc.insert(key, v);
+                                }
+                                return Some(ExecutionResult::Value(
+                                    res.id().to_string(),
+                                    Value::Object(new_doc),
+                                ));
+                            }
+
                             return Some(res);
                         }
                     }
@@ -270,6 +307,7 @@ impl Collection {
     fn scan<'a>(
         &'a self,
         predicate: Option<Expression<'a>>,
+        projections: Option<Vec<Expression<'a>>>,
     ) -> impl Iterator<Item = ExecutionResult> + 'a {
         let mut sources: Vec<SourceIterator> = Vec::new();
 
@@ -295,7 +333,11 @@ impl Collection {
             }
         }
 
-        MergedIterator { sources, predicate }
+        MergedIterator {
+            sources,
+            predicate,
+            projections,
+        }
     }
 
     fn get(&self, id: &str) -> Option<Value> {
@@ -510,9 +552,12 @@ impl DB {
         &'a self,
         collection: &str,
         predicate: Option<Expression<'a>>,
+        projections: Option<Vec<Expression<'a>>>,
     ) -> Result<Box<dyn Iterator<Item = ExecutionResult> + 'a>, String> {
-        self.get_collection(collection)
-            .map(|c| Box::new(c.scan(predicate)) as Box<dyn Iterator<Item = ExecutionResult> + 'a>)
+        self.get_collection(collection).map(|c| {
+            Box::new(c.scan(predicate, projections))
+                as Box<dyn Iterator<Item = ExecutionResult> + 'a>
+        })
     }
 
     pub fn get(&self, collection: &str, id: &str) -> Result<Option<Value>, String> {
@@ -751,7 +796,7 @@ mod tests {
             .unwrap();
 
         let results: HashMap<String, Value> = db
-            .scan("test", None)
+            .scan("test", None, None)
             .unwrap()
             .map(|r| (r.id().to_string(), r.get_value()))
             .collect();
