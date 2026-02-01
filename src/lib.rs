@@ -12,7 +12,6 @@ pub use expression::*;
 
 use jsonb_schema::{Number, RawJsonb, Value as JsonbValue};
 use serde::{Serialize, Serializer};
-use std::collections::BTreeMap;
 
 pub type Value = JsonbValue<'static>;
 
@@ -146,13 +145,11 @@ pub fn serde_to_jsonb(v: serde_json::Value) -> Value {
             let new_arr = arr.into_iter().map(serde_to_jsonb).collect();
             JsonbValue::Array(new_arr)
         }
-        serde_json::Value::Object(obj) => {
-            let mut new_obj = BTreeMap::new();
-            for (k, v) in obj {
-                new_obj.insert(k, serde_to_jsonb(v));
-            }
-            JsonbValue::Object(new_obj)
-        }
+        serde_json::Value::Object(obj) => JsonbValue::Object(
+            obj.into_iter()
+                .map(|(k, v)| (k, serde_to_jsonb(v)))
+                .collect(),
+        ),
     }
 }
 
@@ -190,13 +187,11 @@ pub fn make_static(v: &JsonbValue) -> Value {
         JsonbValue::Number(n) => JsonbValue::Number(n.clone()),
         JsonbValue::String(s) => JsonbValue::String(s.to_string().into()),
         JsonbValue::Array(arr) => JsonbValue::Array(arr.iter().map(make_static).collect()),
-        JsonbValue::Object(obj) => {
-            let mut new_obj = BTreeMap::new();
-            for (k, v) in obj {
-                new_obj.insert(k.clone(), make_static(v));
-            }
-            JsonbValue::Object(new_obj)
-        }
+        JsonbValue::Object(obj) => JsonbValue::Object(
+            obj.iter()
+                .map(|(k, v)| (k.clone(), make_static(v)))
+                .collect(),
+        ),
         _ => JsonbValue::Null,
     }
 }
