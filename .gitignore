@@ -4,3 +4,10 @@ target/
 argus.log
 argus.log.*
 jstable-*
+
+# Benchmarking
+workbook/
+
+# Profiling
+profile.pb
+profile*.md
