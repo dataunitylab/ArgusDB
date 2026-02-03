@@ -279,7 +279,7 @@ impl Collection {
             tables.push(jstable::read_jstable(path.to_str().unwrap()).unwrap());
         }
 
-        let merged_table = jstable::merge_jstables(&tables);
+        let merged_table = jstable::merge_jstables(tables);
 
         for i in 0..self.jstable_count {
             let base_path = self.dir.join(format!("jstable-{}", i));

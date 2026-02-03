@@ -375,9 +375,8 @@ pub fn read_index(path: &str) -> io::Result<Vec<(String, u64)>> {
     Ok(index)
 }
 
-pub fn merge_jstables(tables: &[JSTable]) -> JSTable {
-    let mut sorted_tables: Vec<&JSTable> = tables.iter().collect();
-    sorted_tables.sort_by_key(|t| t.timestamp);
+pub fn merge_jstables(mut tables: Vec<JSTable>) -> JSTable {
+    tables.sort_by_key(|t| t.timestamp);
 
     let mut merged_schema = Schema::new(InstanceType::Object);
     let mut merged_documents = BTreeMap::new();
@@ -389,14 +388,12 @@ pub fn merge_jstables(tables: &[JSTable]) -> JSTable {
         String::new()
     };
 
-    for table in sorted_tables {
+    for mut table in tables {
         if table.timestamp > max_timestamp {
             max_timestamp = table.timestamp;
         }
-        merged_schema.merge(table.schema.clone());
-        for (id, doc) in &table.documents {
-            merged_documents.insert(id.clone(), doc.clone());
-        }
+        merged_schema.merge(table.schema);
+        merged_documents.append(&mut table.documents);
     }
 
     // Filter nulls (tombstones) - Value::Null matches jsonb Null
@@ -552,7 +549,7 @@ mod tests {
         let t2 = JSTable::new(200, "test_col".to_string(), schema.clone(), docs2);
 
         // Case 1: t1 (older) then t2 (newer) in the slice
-        let merged = merge_jstables(&[t1, t2]);
+        let merged = merge_jstables(vec![t1, t2]);
         assert_eq!(
             jsonb_to_serde(merged.documents.get("id1").unwrap()),
             json!({"v": 2})
@@ -569,7 +566,7 @@ mod tests {
         docs2.insert("id1".to_string(), serde_to_jsonb(json!({"v": 2})));
         let t2b = JSTable::new(200, "test_col".to_string(), schema.clone(), docs2);
 
-        let merged_reverse = merge_jstables(&[t2b, t1b]);
+        let merged_reverse = merge_jstables(vec![t2b, t1b]);
         assert_eq!(
             jsonb_to_serde(merged_reverse.documents.get("id1").unwrap()),
             json!({"v": 2})
