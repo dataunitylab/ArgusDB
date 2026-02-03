@@ -57,6 +57,10 @@ struct Args {
     #[arg(long, default_value_t = false)]
     no_log: bool,
 
+    /// Profile output file
+    #[arg(long)]
+    profile: Option<String>,
+
     /// Print help
     #[arg(long, action = clap::ArgAction::Help)]
     help: Option<bool>,
@@ -296,6 +300,8 @@ async fn main() {
     tracing::subscriber::set_global_default(subscriber).unwrap();
     let settings: Settings = builder.build().unwrap().try_deserialize().unwrap();
 
+    let profile_guard = argusdb::bench_utils::start_profiling(&args.profile);
+
     let log_threshold = if settings.no_log {
         None
     } else {
@@ -316,12 +322,30 @@ async fn main() {
     let listener = TcpListener::bind(&server_addr).await.unwrap();
     info!("ArgusDB server listening on {}", server_addr);
 
-    loop {
-        let (socket, _) = listener.accept().await.unwrap();
-        let processor = processor.clone();
+    let mut sigterm =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
+    let mut sigint =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).unwrap();
 
-        tokio::spawn(async move {
-            let _ = process_socket(socket, None, processor).await;
-        });
+    loop {
+        let processor = processor.clone();
+        tokio::select! {
+            res = listener.accept() => {
+                let (socket, _) = res.unwrap();
+                tokio::spawn(async move {
+                    let _ = process_socket(socket, None, processor).await;
+                });
+            }
+            _ = sigterm.recv() => {
+                info!("Received SIGTERM, shutting down");
+                break;
+            }
+            _ = sigint.recv() => {
+                info!("Received SIGINT, shutting down");
+                break;
+            }
+        }
     }
+
+    argusdb::bench_utils::save_profile(profile_guard, &args.profile);
 }

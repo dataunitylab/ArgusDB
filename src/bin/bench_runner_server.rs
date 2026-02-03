@@ -1,9 +1,7 @@
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
-use argusdb::bench_utils::{
-    Args, Query, load_queries, run_measurement, save_profile, start_profiling,
-};
+use argusdb::bench_utils::{Args, Query, load_queries, run_measurement};
 use clap::Parser;
 use rand::prelude::IndexedRandom;
 use std::fs;
@@ -26,7 +24,12 @@ struct ServerGuard {
 
 impl Drop for ServerGuard {
     fn drop(&mut self) {
-        let _ = self.child.kill();
+        let pid = self.child.id();
+        let _ = Command::new("kill")
+            .arg("-s")
+            .arg("TERM")
+            .arg(pid.to_string())
+            .status();
         let _ = self.child.wait();
     }
 }
@@ -102,6 +105,10 @@ async fn main() {
 
     if args.no_log {
         command.arg("--no-log");
+    }
+
+    if let Some(profile) = &args.profile {
+        command.arg("--profile").arg(profile);
     }
 
     let child = command
@@ -193,7 +200,6 @@ async fn main() {
     .await;
 
     println!("Starting measurement for {} seconds...", args.duration);
-    let guard = start_profiling(&args.profile);
 
     let results = run_measurement(
         args.concurrency,
@@ -204,8 +210,6 @@ async fn main() {
         true,
     )
     .await;
-
-    save_profile(guard, &args.profile);
 
     println!("Results:");
     for (name, (count, total_time)) in results {
