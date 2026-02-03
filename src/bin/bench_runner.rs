@@ -50,7 +50,8 @@ async fn main() {
     let db_path = dir.path().to_str().unwrap();
     println!("Setting up DB at {}", db_path);
 
-    let db = Arc::new(Mutex::new(DB::new(db_path, 1000, 10, 1024, None)));
+    let log_threshold = if args.no_log { None } else { Some(1024 * 1024) };
+    let db = Arc::new(Mutex::new(DB::new(db_path, 1000, 10, 1024, log_threshold)));
 
     // 2. Load Data
     let data_dir = Path::new("workbook/data");

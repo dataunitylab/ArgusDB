@@ -53,6 +53,10 @@ struct Args {
     #[arg(long)]
     index_threshold: Option<u64>,
 
+    /// Disable logging
+    #[arg(long, default_value_t = false)]
+    no_log: bool,
+
     /// Print help
     #[arg(long, action = clap::ArgAction::Help)]
     help: Option<bool>,
@@ -72,6 +76,8 @@ struct Settings {
     jstable_dir: String,
     #[serde(default = "default_index_threshold")]
     index_threshold: u64,
+    #[serde(default = "default_no_log")]
+    no_log: bool,
 }
 
 fn default_host() -> String {
@@ -96,6 +102,10 @@ fn default_jstable_dir() -> String {
 
 fn default_index_threshold() -> u64 {
     1024
+}
+
+fn default_no_log() -> bool {
+    false
 }
 
 pub struct ArgusHandler {
@@ -276,6 +286,9 @@ async fn main() {
             .set_override("index_threshold", index_threshold as i64)
             .unwrap();
     }
+    if args.no_log {
+        builder = builder.set_override("no_log", true).unwrap();
+    }
 
     let subscriber = tracing_subscriber::fmt()
         .with_max_level(Level::TRACE)
@@ -283,12 +296,18 @@ async fn main() {
     tracing::subscriber::set_global_default(subscriber).unwrap();
     let settings: Settings = builder.build().unwrap().try_deserialize().unwrap();
 
+    let log_threshold = if settings.no_log {
+        None
+    } else {
+        Some(1024 * 1024)
+    };
+
     let db = Arc::new(Mutex::new(DB::new(
         &settings.jstable_dir,
         settings.memtable_threshold,
         settings.jstable_threshold,
         settings.index_threshold,
-        Some(1024 * 1024),
+        log_threshold,
     )));
     let handler = Arc::new(ArgusHandler::new(db));
     let processor = Arc::new(ArgusProcessor { handler });

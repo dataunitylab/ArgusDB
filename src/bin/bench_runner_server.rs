@@ -84,21 +84,27 @@ async fn main() {
     let host = "127.0.0.1";
 
     println!("Starting ArgusDB server on {}:{}", host, port);
-    let child = Command::new("./target/release/argusdb")
-        .args(&[
-            "--jstable-dir",
-            &db_path,
-            "--host",
-            host,
-            "--port",
-            &port.to_string(),
-            "--memtable-threshold",
-            "1000",
-            "--jstable-threshold",
-            "10",
-            "--index-threshold",
-            "1024",
-        ])
+    let mut command = Command::new("./target/release/argusdb");
+    command.args(&[
+        "--jstable-dir",
+        &db_path,
+        "--host",
+        host,
+        "--port",
+        &port.to_string(),
+        "--memtable-threshold",
+        "1000",
+        "--jstable-threshold",
+        "10",
+        "--index-threshold",
+        "1024",
+    ]);
+
+    if args.no_log {
+        command.arg("--no-log");
+    }
+
+    let child = command
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .spawn()

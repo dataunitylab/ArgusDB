@@ -21,6 +21,9 @@ pub struct Args {
     #[arg(short, long, default_value_t = 30)]
     pub duration: u64,
 
+    #[arg(long, default_value_t = false)]
+    pub no_log: bool,
+
     #[cfg(feature = "profiling")]
     #[arg(long, default_value_t = false)]
     pub profile: bool,
