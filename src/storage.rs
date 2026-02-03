@@ -31,7 +31,7 @@ impl MemTable {
     }
 
     pub fn flush(
-        &self,
+        self,
         path: &str,
         collection: String,
         index_threshold: u64,
@@ -40,12 +40,7 @@ impl MemTable {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
-        let jstable = JSTable::new(
-            timestamp,
-            collection,
-            self.schema.clone(),
-            self.documents.clone(),
-        );
+        let jstable = JSTable::new(timestamp, collection, self.schema, self.documents);
         jstable.write(path, index_threshold)
     }
 

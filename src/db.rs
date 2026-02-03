@@ -248,7 +248,8 @@ impl Collection {
 
     fn flush(&mut self) {
         let jstable_path = self.dir.join(format!("jstable-{}", self.jstable_count));
-        self.memtable
+        let memtable = std::mem::take(&mut self.memtable);
+        memtable
             .flush(
                 jstable_path.to_str().unwrap(),
                 self.name.clone(),
@@ -264,7 +265,6 @@ impl Collection {
         self.tables.push(LoadedTable { filter, index });
 
         self.jstable_count += 1;
-        self.memtable = MemTable::new();
         self.logger.rotate().unwrap();
 
         if self.jstable_count >= self.jstable_threshold {
