@@ -104,10 +104,7 @@ async fn main() {
     .await;
 
     println!("Starting measurement for {} seconds...", args.duration);
-    #[cfg(feature = "profiling")]
-    let guard = start_profiling(args.profile);
-    #[cfg(not(feature = "profiling"))]
-    let guard = start_profiling(false);
+    let guard = start_profiling(&args.profile);
 
     let results = run_measurement(
         args.concurrency,
@@ -119,7 +116,7 @@ async fn main() {
     )
     .await;
 
-    save_profile(guard);
+    save_profile(guard, &args.profile);
 
     println!("Results:");
     for (name, (count, total_time)) in results {

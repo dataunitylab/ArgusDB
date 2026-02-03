@@ -24,9 +24,8 @@ pub struct Args {
     #[arg(long, default_value_t = false)]
     pub no_log: bool,
 
-    #[cfg(feature = "profiling")]
-    #[arg(long, default_value_t = false)]
-    pub profile: bool,
+    #[arg(long, num_args = 0..=1, default_missing_value = "profile.pb")]
+    pub profile: Option<String>,
 }
 
 #[derive(Clone)]
@@ -117,8 +116,8 @@ where
 }
 
 #[cfg(feature = "profiling")]
-pub fn start_profiling(enable: bool) -> Option<pprof::ProfilerGuard<'static>> {
-    if enable {
+pub fn start_profiling(profile: &Option<String>) -> Option<pprof::ProfilerGuard<'static>> {
+    if profile.is_some() {
         Some(
             pprof::ProfilerGuardBuilder::default()
                 .frequency(1000)
@@ -132,32 +131,37 @@ pub fn start_profiling(enable: bool) -> Option<pprof::ProfilerGuard<'static>> {
 }
 
 #[cfg(not(feature = "profiling"))]
-pub fn start_profiling(_enable: bool) -> Option<()> {
+pub fn start_profiling(profile: &Option<String>) -> Option<()> {
+    if profile.is_some() {
+        eprintln!("Warning: --profile flag ignored because 'profiling' feature is not enabled.");
+    }
     None
 }
 
 #[cfg(feature = "profiling")]
-pub fn save_profile(guard: Option<pprof::ProfilerGuard<'static>>) {
+pub fn save_profile(guard: Option<pprof::ProfilerGuard<'static>>, filename: &Option<String>) {
     use protobuf::Message;
     use std::fs::File;
     use std::io::Write;
 
     if let Some(g) = guard {
-        match g.report().build() {
-            Ok(report) => {
-                let mut file = File::create("profile.pb").unwrap();
-                let profile = report.pprof().unwrap();
+        if let Some(fname) = filename {
+            match g.report().build() {
+                Ok(report) => {
+                    let mut file = File::create(fname).unwrap();
+                    let profile = report.pprof().unwrap();
 
-                let mut content = Vec::new();
-                profile.write_to_writer(&mut content).unwrap();
-                file.write_all(&content).unwrap();
+                    let mut content = Vec::new();
+                    profile.write_to_writer(&mut content).unwrap();
+                    file.write_all(&content).unwrap();
 
-                println!("report: {:?}", &report);
-            }
-            Err(_) => {}
-        };
+                    println!("report: {:?}", &report);
+                }
+                Err(_) => {}
+            };
+        }
     }
 }
 
 #[cfg(not(feature = "profiling"))]
-pub fn save_profile(_guard: Option<()>) {}
+pub fn save_profile(_guard: Option<()>, _filename: &Option<String>) {}
