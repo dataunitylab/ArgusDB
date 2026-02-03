@@ -312,10 +312,11 @@ impl Collection {
         let mut sources: Vec<SourceIterator> = Vec::new();
 
         // 1. MemTable Iterator (Priority 0 - Highest)
-        let mem_iter = self
-            .memtable
-            .documents
-            .iter()
+        // Must sort because MemTable now uses HashMap
+        let mut mem_docs: Vec<_> = self.memtable.documents.iter().collect();
+        mem_docs.sort_by_key(|(k, _)| *k);
+        let mem_iter = mem_docs
+            .into_iter()
             .map(|(k, v)| ExecutionResult::Value(k.clone(), v.clone()));
 
         sources.push((Box::new(mem_iter) as Box<dyn Iterator<Item = ExecutionResult>>).peekable());

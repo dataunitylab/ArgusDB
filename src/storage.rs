@@ -1,10 +1,10 @@
 use crate::Value;
 use crate::jstable::JSTable;
 use crate::schema::{Schema, SchemaExt, infer_schema};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 pub struct MemTable {
-    pub documents: BTreeMap<String, Value>,
+    pub documents: HashMap<String, Value>,
     schema: Schema,
 }
 
@@ -17,7 +17,7 @@ impl Default for MemTable {
 impl MemTable {
     pub fn new() -> Self {
         MemTable {
-            documents: BTreeMap::new(),
+            documents: HashMap::new(),
             schema: Schema::default(),
         }
     }
@@ -40,7 +40,11 @@ impl MemTable {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
-        let jstable = JSTable::new(timestamp, collection, self.schema, self.documents);
+
+        // Sort documents by ID for JSTable
+        let sorted_docs: BTreeMap<String, Value> = self.documents.into_iter().collect();
+
+        let jstable = JSTable::new(timestamp, collection, self.schema, sorted_docs);
         jstable.write(path, index_threshold)
     }
 
