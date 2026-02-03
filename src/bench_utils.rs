@@ -26,6 +26,9 @@ pub struct Args {
 
     #[arg(long, num_args = 0..=1, default_missing_value = "profile.pb")]
     pub profile: Option<String>,
+
+    #[arg(long, default_value_t = false)]
+    pub skip_queries: bool,
 }
 
 #[derive(Clone)]

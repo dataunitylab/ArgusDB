@@ -161,6 +161,11 @@ async fn main() {
         return;
     }
 
+    if args.skip_queries {
+        println!("Skipping queries...");
+        return;
+    }
+
     // 4. Establish connections for benchmark
     let mut clients = Vec::new();
     let mut _handles = Vec::new();

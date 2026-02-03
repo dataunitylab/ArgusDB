@@ -85,6 +85,11 @@ async fn main() {
         return;
     }
 
+    if args.skip_queries {
+        println!("Skipping queries...");
+        return;
+    }
+
     // 3. Load Queries
     let queries = Arc::new(load_queries());
     if queries.is_empty() {

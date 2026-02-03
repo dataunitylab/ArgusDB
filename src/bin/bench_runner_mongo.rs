@@ -79,6 +79,11 @@ async fn main() {
         return;
     }
 
+    if args.skip_queries {
+        println!("Skipping queries...");
+        return;
+    }
+
     let queries = Arc::new(load_queries());
     let ctx = Arc::new(db);
 
