@@ -19,6 +19,76 @@ struct MergedIterator<'a> {
     projections: Option<Vec<Expression<'a>>>,
 }
 
+struct HybridIterator<'a> {
+    mem_iter: std::collections::hash_map::Iter<'a, String, Value>,
+    disk_iter: MergedIterator<'a>,
+    memtable: &'a HashMap<String, Value>,
+    phase: ScanPhase,
+    predicate: Option<Expression<'a>>,
+    projections: Option<Vec<Expression<'a>>>,
+}
+
+enum ScanPhase {
+    MemTable,
+    Disk,
+}
+
+impl<'a> Iterator for HybridIterator<'a> {
+    type Item = ExecutionResult;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            match self.phase {
+                ScanPhase::MemTable => {
+                    if let Some((id, val)) = self.mem_iter.next() {
+                        use jsonb_schema::Value as JsonbValue;
+                        if matches!(val, JsonbValue::Null) {
+                            continue; // Tombstone
+                        }
+
+                        if let Some(pred) = &self.predicate {
+                            if evaluate_expression(pred, val) != Value::Bool(true) {
+                                continue;
+                            }
+                        }
+
+                        if let Some(projs) = &self.projections {
+                            let mut new_doc = BTreeMap::new();
+                            for expr in projs {
+                                let v = evaluate_expression(expr, val);
+                                let key = match expr {
+                                    Expression::FieldReference(_, raw) => raw.to_string(),
+                                    Expression::JsonPath(_, raw) => raw.to_string(),
+                                    _ => "col".to_string(),
+                                };
+                                new_doc.insert(key, v);
+                            }
+                            return Some(ExecutionResult::Value(
+                                id.clone(),
+                                Value::Object(new_doc),
+                            ));
+                        }
+
+                        return Some(ExecutionResult::Value(id.clone(), val.clone()));
+                    } else {
+                        self.phase = ScanPhase::Disk;
+                    }
+                }
+                ScanPhase::Disk => {
+                    if let Some(res) = self.disk_iter.next() {
+                        if self.memtable.contains_key(res.id()) {
+                            continue;
+                        }
+                        return Some(res);
+                    } else {
+                        return None;
+                    }
+                }
+            }
+        }
+    }
+}
+
 use crate::expression::evaluate_expression_lazy;
 
 impl<'a> Iterator for MergedIterator<'a> {
@@ -309,19 +379,9 @@ impl Collection {
         predicate: Option<Expression<'a>>,
         projections: Option<Vec<Expression<'a>>>,
     ) -> impl Iterator<Item = ExecutionResult> + 'a {
-        let mut sources: Vec<SourceIterator> = Vec::new();
+        let mut disk_sources: Vec<SourceIterator> = Vec::new();
 
-        // 1. MemTable Iterator (Priority 0 - Highest)
-        // Must sort because MemTable now uses HashMap
-        let mut mem_docs: Vec<_> = self.memtable.documents.iter().collect();
-        mem_docs.sort_by_key(|(k, _)| *k);
-        let mem_iter = mem_docs
-            .into_iter()
-            .map(|(k, v)| ExecutionResult::Value(k.clone(), v.clone()));
-
-        sources.push((Box::new(mem_iter) as Box<dyn Iterator<Item = ExecutionResult>>).peekable());
-
-        // 2. JSTable Iterators (Newer to Older)
+        // JSTable Iterators (Newer to Older)
         for i in (0..self.jstable_count).rev() {
             let path = self.dir.join(format!("jstable-{}", i));
             if let Ok(iter) = jstable::JSTableLazyIterator::new(path.to_str().unwrap()) {
@@ -329,13 +389,22 @@ impl Collection {
                     let doc = r.unwrap();
                     ExecutionResult::Lazy(doc)
                 });
-                sources
+                disk_sources
                     .push((Box::new(iter) as Box<dyn Iterator<Item = ExecutionResult>>).peekable());
             }
         }
 
-        MergedIterator {
-            sources,
+        let disk_iter = MergedIterator {
+            sources: disk_sources,
+            predicate: predicate.clone(),
+            projections: projections.clone(),
+        };
+
+        HybridIterator {
+            mem_iter: self.memtable.documents.iter(),
+            disk_iter,
+            memtable: &self.memtable.documents,
+            phase: ScanPhase::MemTable,
             predicate,
             projections,
         }
