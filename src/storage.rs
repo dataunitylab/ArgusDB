@@ -1,5 +1,5 @@
 use crate::Value;
-use crate::jstable::JSTable;
+use crate::jstable::{JSTable, StoredValue};
 use crate::schema::{Schema, SchemaExt, infer_schema};
 use std::collections::{BTreeMap, HashMap};
 
@@ -42,7 +42,11 @@ impl MemTable {
             .as_millis() as u64;
 
         // Sort documents by ID for JSTable
-        let sorted_docs: BTreeMap<String, Value> = self.documents.into_iter().collect();
+        let sorted_docs: BTreeMap<String, StoredValue> = self
+            .documents
+            .into_iter()
+            .map(|(k, v)| (k, StoredValue::Static(v)))
+            .collect();
 
         let jstable = JSTable::new(timestamp, collection, self.schema, sorted_docs);
         jstable.write(path, index_threshold)

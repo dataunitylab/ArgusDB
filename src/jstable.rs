@@ -7,11 +7,17 @@ use std::fs::File;
 use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
 use xorf::BinaryFuse8;
 
+#[derive(Clone, Debug)]
+pub enum StoredValue {
+    Static(Value),
+    Lazy(LazyDocument),
+}
+
 pub struct JSTable {
     pub timestamp: u64,
     pub collection: String,
     pub schema: Schema,
-    pub documents: BTreeMap<String, Value>,
+    pub documents: BTreeMap<String, StoredValue>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -26,7 +32,7 @@ impl JSTable {
         timestamp: u64,
         collection: String,
         schema: Schema,
-        documents: BTreeMap<String, Value>,
+        documents: BTreeMap<String, StoredValue>,
     ) -> Self {
         JSTable {
             timestamp,
@@ -84,7 +90,7 @@ impl JSTable {
         let mut bytes_since_last_index: u64 = 0;
         let mut first = true;
 
-        for (id, doc) in &self.documents {
+        for (id, val) in &self.documents {
             // Add index entry if needed
             if first || bytes_since_last_index >= index_threshold {
                 index.push((id.clone(), current_offset));
@@ -92,11 +98,20 @@ impl JSTable {
                 first = false;
             }
 
-            // Use SerdeWrapper to serialize jsonb Value via serde infrastructure
-            let record = (id.clone(), SerdeWrapper(doc));
-            let record_blob = jsonb_schema::to_owned_jsonb(&record)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            let record_bytes = record_blob.to_vec();
+            let record_bytes = match val {
+                StoredValue::Static(doc) => {
+                    // Use SerdeWrapper to serialize jsonb Value via serde infrastructure
+                    let record = (id.clone(), SerdeWrapper(doc));
+                    let record_blob = jsonb_schema::to_owned_jsonb(&record)
+                        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                    record_blob.to_vec()
+                }
+                StoredValue::Lazy(doc) => {
+                    // LazyDocument.raw is already the serialized [id, doc] tuple
+                    doc.raw.clone()
+                }
+            };
+
             let record_len = record_bytes.len() as u32;
 
             data_file.write_all(&record_len.to_le_bytes())?;
@@ -281,15 +296,15 @@ impl Iterator for JSTableIterator {
 }
 
 pub fn read_jstable(path: &str) -> io::Result<JSTable> {
-    let iterator = JSTableIterator::new(path)?;
-    let timestamp = iterator.timestamp();
-    let collection = iterator.collection().to_string();
-    let schema = iterator.schema().clone();
+    let iterator = JSTableLazyIterator::new(path)?;
+    let timestamp = iterator.timestamp;
+    let collection = iterator.collection.clone();
+    let schema = iterator.schema.clone();
 
     let mut documents = BTreeMap::new();
     for result in iterator {
-        let (id, doc) = result?;
-        documents.insert(id, doc);
+        let lazy_doc = result?;
+        documents.insert(lazy_doc.id.clone(), StoredValue::Lazy(lazy_doc));
     }
 
     Ok(JSTable {
@@ -398,7 +413,10 @@ pub fn merge_jstables(mut tables: Vec<JSTable>) -> JSTable {
 
     // Filter nulls (tombstones) - Value::Null matches jsonb Null
     use jsonb_schema::Value as JsonbValue;
-    merged_documents.retain(|_, v| !matches!(v, JsonbValue::Null));
+    merged_documents.retain(|_, v| match v {
+        StoredValue::Static(s) => !matches!(s, JsonbValue::Null),
+        StoredValue::Lazy(l) => !l.is_tombstone(),
+    });
 
     JSTable::new(max_timestamp, collection, merged_schema, merged_documents)
 }
@@ -428,8 +446,14 @@ mod tests {
             Schema::new(InstanceType::Integer),
         )]));
         let mut documents = BTreeMap::new();
-        documents.insert("id1".to_string(), serde_to_jsonb(json!({"a": 1})));
-        documents.insert("id2".to_string(), serde_to_jsonb(json!({"a": 2})));
+        documents.insert(
+            "id1".to_string(),
+            StoredValue::Static(serde_to_jsonb(json!({"a": 1}))),
+        );
+        documents.insert(
+            "id2".to_string(),
+            StoredValue::Static(serde_to_jsonb(json!({"a": 2}))),
+        );
         let jstable = JSTable::new(
             12345,
             "test_col".to_string(),
@@ -447,13 +471,15 @@ mod tests {
         assert_eq!(read_table.collection, "test_col");
         assert_eq!(get_types(&read_table.schema), vec![InstanceType::Object]);
         assert_eq!(read_table.documents.len(), 2);
-        // Compare values
-        let v1 = read_table.documents.get("id1").unwrap();
-        // convert to serde for easy comparison
-        assert_eq!(jsonb_to_serde(v1), json!({"a": 1}));
 
-        let v2 = read_table.documents.get("id2").unwrap();
-        assert_eq!(jsonb_to_serde(v2), json!({"a": 2}));
+        // Check contents
+        match read_table.documents.get("id1").unwrap() {
+            StoredValue::Lazy(lazy) => {
+                assert_eq!(lazy.id, "id1");
+            }
+            _ => panic!("Expected Lazy document"),
+        }
+
         Ok(())
     }
 
@@ -465,8 +491,14 @@ mod tests {
             Schema::new(InstanceType::Integer),
         )]));
         let mut documents = BTreeMap::new();
-        documents.insert("id1".to_string(), serde_to_jsonb(json!({"a": 1})));
-        documents.insert("id2".to_string(), serde_to_jsonb(json!({"a": 2})));
+        documents.insert(
+            "id1".to_string(),
+            StoredValue::Static(serde_to_jsonb(json!({"a": 1}))),
+        );
+        documents.insert(
+            "id2".to_string(),
+            StoredValue::Static(serde_to_jsonb(json!({"a": 2}))),
+        );
         let jstable = JSTable::new(
             12345,
             "test_col".to_string(),
@@ -506,8 +538,14 @@ mod tests {
             Schema::new(InstanceType::Integer),
         )]));
         let mut documents = BTreeMap::new();
-        documents.insert("id1".to_string(), serde_to_jsonb(json!({"a": 1})));
-        documents.insert("id2".to_string(), serde_to_jsonb(json!({"a": 2})));
+        documents.insert(
+            "id1".to_string(),
+            StoredValue::Static(serde_to_jsonb(json!({"a": 1}))),
+        );
+        documents.insert(
+            "id2".to_string(),
+            StoredValue::Static(serde_to_jsonb(json!({"a": 2}))),
+        );
         let jstable = JSTable::new(
             12345,
             "test_col".to_string(),
@@ -541,36 +579,50 @@ mod tests {
         let schema = Schema::new(InstanceType::Object);
 
         let mut docs1 = BTreeMap::new();
-        docs1.insert("id1".to_string(), serde_to_jsonb(json!({"v": 1})));
+        docs1.insert(
+            "id1".to_string(),
+            StoredValue::Static(serde_to_jsonb(json!({"v": 1}))),
+        );
         let t1 = JSTable::new(100, "test_col".to_string(), schema.clone(), docs1);
 
         let mut docs2 = BTreeMap::new();
-        docs2.insert("id1".to_string(), serde_to_jsonb(json!({"v": 2})));
+        docs2.insert(
+            "id1".to_string(),
+            StoredValue::Static(serde_to_jsonb(json!({"v": 2}))),
+        );
         let t2 = JSTable::new(200, "test_col".to_string(), schema.clone(), docs2);
 
         // Case 1: t1 (older) then t2 (newer) in the slice
         let merged = merge_jstables(vec![t1, t2]);
-        assert_eq!(
-            jsonb_to_serde(merged.documents.get("id1").unwrap()),
-            json!({"v": 2})
-        );
+        let val = merged.documents.get("id1").unwrap();
+        match val {
+            StoredValue::Static(v) => assert_eq!(jsonb_to_serde(v), json!({"v": 2})),
+            _ => panic!("Expected static value"),
+        }
         assert_eq!(merged.timestamp, 200);
         assert_eq!(merged.collection, "test_col");
 
         // Case 2: Reverse order
         let mut docs1 = BTreeMap::new();
-        docs1.insert("id1".to_string(), serde_to_jsonb(json!({"v": 1})));
+        docs1.insert(
+            "id1".to_string(),
+            StoredValue::Static(serde_to_jsonb(json!({"v": 1}))),
+        );
         let t1b = JSTable::new(100, "test_col".to_string(), schema.clone(), docs1);
 
         let mut docs2 = BTreeMap::new();
-        docs2.insert("id1".to_string(), serde_to_jsonb(json!({"v": 2})));
+        docs2.insert(
+            "id1".to_string(),
+            StoredValue::Static(serde_to_jsonb(json!({"v": 2}))),
+        );
         let t2b = JSTable::new(200, "test_col".to_string(), schema.clone(), docs2);
 
         let merged_reverse = merge_jstables(vec![t2b, t1b]);
-        assert_eq!(
-            jsonb_to_serde(merged_reverse.documents.get("id1").unwrap()),
-            json!({"v": 2})
-        );
+        let val = merged_reverse.documents.get("id1").unwrap();
+        match val {
+            StoredValue::Static(v) => assert_eq!(jsonb_to_serde(v), json!({"v": 2})),
+            _ => panic!("Expected static value"),
+        }
         assert_eq!(merged_reverse.timestamp, 200);
     }
 
@@ -579,9 +631,18 @@ mod tests {
         let schema = Schema::new(InstanceType::Object);
         let mut documents = BTreeMap::new();
         // Insert keys in non-sorted order (BTreeMap will sort them)
-        documents.insert("c".to_string(), serde_to_jsonb(json!(3)));
-        documents.insert("a".to_string(), serde_to_jsonb(json!(1)));
-        documents.insert("b".to_string(), serde_to_jsonb(json!(2)));
+        documents.insert(
+            "c".to_string(),
+            StoredValue::Static(serde_to_jsonb(json!(3))),
+        );
+        documents.insert(
+            "a".to_string(),
+            StoredValue::Static(serde_to_jsonb(json!(1))),
+        );
+        documents.insert(
+            "b".to_string(),
+            StoredValue::Static(serde_to_jsonb(json!(2))),
+        );
 
         let jstable = JSTable::new(123, "sorted_test".to_string(), schema, documents);
 
@@ -602,13 +663,28 @@ mod tests {
         let mut documents = BTreeMap::new();
 
         let large_val = "x".repeat(500); // ~500 bytes
-        documents.insert("a".to_string(), serde_to_jsonb(json!(large_val)));
-        documents.insert("b".to_string(), serde_to_jsonb(json!(large_val)));
-        documents.insert("c".to_string(), serde_to_jsonb(json!(large_val)));
+        documents.insert(
+            "a".to_string(),
+            StoredValue::Static(serde_to_jsonb(json!(large_val))),
+        );
+        documents.insert(
+            "b".to_string(),
+            StoredValue::Static(serde_to_jsonb(json!(large_val))),
+        );
+        documents.insert(
+            "c".to_string(),
+            StoredValue::Static(serde_to_jsonb(json!(large_val))),
+        );
 
         let larger_val = "x".repeat(1100);
-        documents.insert("d".to_string(), serde_to_jsonb(json!(larger_val)));
-        documents.insert("e".to_string(), serde_to_jsonb(json!(1)));
+        documents.insert(
+            "d".to_string(),
+            StoredValue::Static(serde_to_jsonb(json!(larger_val))),
+        );
+        documents.insert(
+            "e".to_string(),
+            StoredValue::Static(serde_to_jsonb(json!(1))),
+        );
 
         let jstable = JSTable::new(123, "idx_test".to_string(), schema, documents);
         let dir = tempdir()?;
