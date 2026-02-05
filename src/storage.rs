@@ -31,7 +31,7 @@ impl MemTable {
     }
 
     pub fn flush(
-        self,
+        &self,
         path: &str,
         collection: String,
         index_threshold: u64,
@@ -44,11 +44,11 @@ impl MemTable {
         // Sort documents by ID for JSTable
         let sorted_docs: BTreeMap<String, StoredValue> = self
             .documents
-            .into_iter()
-            .map(|(k, v)| (k, StoredValue::Static(v)))
+            .iter()
+            .map(|(k, v)| (k.clone(), StoredValue::Static(v.clone())))
             .collect();
 
-        let jstable = JSTable::new(timestamp, collection, self.schema, sorted_docs);
+        let jstable = JSTable::new(timestamp, collection, self.schema.clone(), sorted_docs);
         jstable.write(path, index_threshold)
     }
 

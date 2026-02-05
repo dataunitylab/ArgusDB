@@ -8,6 +8,8 @@ use std::fmt::Debug;
 use std::fs;
 use std::iter::Peekable;
 use std::path::PathBuf;
+use std::sync::{Arc, mpsc};
+use std::thread;
 use uuid::Uuid;
 use xorf::{BinaryFuse8, Filter};
 
@@ -21,8 +23,10 @@ struct MergedIterator<'a> {
 
 struct HybridIterator<'a> {
     mem_iter: std::collections::hash_map::Iter<'a, String, Value>,
+    frozen_iter: Option<std::collections::hash_map::Iter<'a, String, Value>>,
     disk_iter: MergedIterator<'a>,
     memtable: &'a HashMap<String, Value>,
+    frozen_memtable: Option<&'a HashMap<String, Value>>,
     phase: ScanPhase,
     predicate: Option<Expression<'a>>,
     projections: Option<Vec<Expression<'a>>>,
@@ -30,6 +34,7 @@ struct HybridIterator<'a> {
 
 enum ScanPhase {
     MemTable,
+    FrozenMemTable,
     Disk,
 }
 
@@ -71,6 +76,50 @@ impl<'a> Iterator for HybridIterator<'a> {
 
                         return Some(ExecutionResult::Value(id.clone(), val.clone()));
                     } else {
+                        self.phase = ScanPhase::FrozenMemTable;
+                    }
+                }
+                ScanPhase::FrozenMemTable => {
+                    if let Some(iter) = &mut self.frozen_iter {
+                        if let Some((id, val)) = iter.next() {
+                            // Check if shadowed by active memtable
+                            if self.memtable.contains_key(id) {
+                                continue;
+                            }
+
+                            use jsonb_schema::Value as JsonbValue;
+                            if matches!(val, JsonbValue::Null) {
+                                continue; // Tombstone
+                            }
+
+                            if let Some(pred) = &self.predicate {
+                                if evaluate_expression(pred, val) != Value::Bool(true) {
+                                    continue;
+                                }
+                            }
+
+                            if let Some(projs) = &self.projections {
+                                let mut new_doc = BTreeMap::new();
+                                for expr in projs {
+                                    let v = evaluate_expression(expr, val);
+                                    let key = match expr {
+                                        Expression::FieldReference(_, raw) => raw.to_string(),
+                                        Expression::JsonPath(_, raw) => raw.to_string(),
+                                        _ => "col".to_string(),
+                                    };
+                                    new_doc.insert(key, v);
+                                }
+                                return Some(ExecutionResult::Value(
+                                    id.clone(),
+                                    Value::Object(new_doc),
+                                ));
+                            }
+
+                            return Some(ExecutionResult::Value(id.clone(), val.clone()));
+                        } else {
+                            self.phase = ScanPhase::Disk;
+                        }
+                    } else {
                         self.phase = ScanPhase::Disk;
                     }
                 }
@@ -78,6 +127,11 @@ impl<'a> Iterator for HybridIterator<'a> {
                     if let Some(res) = self.disk_iter.next() {
                         if self.memtable.contains_key(res.id()) {
                             continue;
+                        }
+                        if let Some(frozen) = self.frozen_memtable {
+                            if frozen.contains_key(res.id()) {
+                                continue;
+                            }
                         }
                         return Some(res);
                     } else {
@@ -216,7 +270,7 @@ fn sanitize_filename(name: &str) -> String {
     result
 }
 
-struct LoadedTable {
+pub(crate) struct LoadedTable {
     filter: BinaryFuse8,
     index: Vec<(String, u64)>,
 }
@@ -224,6 +278,8 @@ struct LoadedTable {
 struct Collection {
     name: String,
     pub memtable: MemTable,
+    pub frozen_memtable: Option<Arc<MemTable>>,
+    flush_rx: Option<mpsc::Receiver<Result<LoadedTable, String>>>,
     dir: PathBuf,
     jstable_count: u64,
     logger: Box<dyn Log>,
@@ -271,6 +327,8 @@ impl Collection {
         Collection {
             name,
             memtable,
+            frozen_memtable: None,
+            flush_rx: None,
             dir,
             jstable_count,
             logger,
@@ -283,8 +341,15 @@ impl Collection {
 
     #[tracing::instrument]
     fn insert(&mut self, doc: Value) -> String {
+        // Check if any background flush finished
+        self.check_flush_status(false);
+
         if self.memtable.len() >= self.memtable_threshold {
-            self.flush();
+            // If we still have a frozen memtable, we must wait for it to clear
+            if self.frozen_memtable.is_some() {
+                self.check_flush_status(true);
+            }
+            self.trigger_flush();
         }
         let id = Uuid::now_v7().to_string();
         self.logger
@@ -316,30 +381,82 @@ impl Collection {
         self.memtable.update(id, doc);
     }
 
-    fn flush(&mut self) {
-        let jstable_path = self.dir.join(format!("jstable-{}", self.jstable_count));
-        let memtable = std::mem::take(&mut self.memtable);
-        memtable
-            .flush(
-                jstable_path.to_str().unwrap(),
-                self.name.clone(),
-                self.index_threshold,
-            )
-            .unwrap();
+    fn check_flush_status(&mut self, wait: bool) {
+        if let Some(rx) = &self.flush_rx {
+            let res = if wait {
+                rx.recv().map_err(|e| e.to_string())
+            } else {
+                rx.try_recv().map_err(|e| e.to_string())
+            };
 
-        // Load the new filter and index
-        let path_str = jstable_path.to_str().unwrap();
-        let filter = jstable::read_filter(path_str).unwrap();
-        let index = jstable::read_index(path_str).unwrap();
+            if let Ok(result) = res {
+                match result {
+                    Ok(table) => {
+                        self.tables.push(table);
+                        self.jstable_count += 1;
+                        if self.jstable_count >= self.jstable_threshold {
+                            self.compact();
+                        }
+                    }
+                    Err(e) => eprintln!("Background flush failed: {}", e),
+                }
+                self.frozen_memtable = None;
+                self.flush_rx = None;
+            } else if wait {
+                // If we waited and got error (e.g. channel closed), clear state
+                self.frozen_memtable = None;
+                self.flush_rx = None;
+            }
+        }
+    }
 
-        self.tables.push(LoadedTable { filter, index });
+    pub fn wait_for_ongoing_flush(&mut self) {
+        self.check_flush_status(true);
+    }
 
-        self.jstable_count += 1;
+    fn trigger_flush(&mut self) {
         self.logger.rotate().unwrap();
 
-        if self.jstable_count >= self.jstable_threshold {
-            self.compact();
-        }
+        let jstable_path = self.dir.join(format!("jstable-{}", self.jstable_count));
+        let index_threshold = self.index_threshold;
+        let collection_name = self.name.clone();
+
+        let memtable = std::mem::take(&mut self.memtable);
+        let frozen = Arc::new(memtable);
+        self.frozen_memtable = Some(frozen.clone());
+
+        let (tx, rx) = mpsc::channel();
+        self.flush_rx = Some(rx);
+
+        thread::spawn(move || {
+            match frozen.flush(
+                jstable_path.to_str().unwrap(),
+                collection_name,
+                index_threshold,
+            ) {
+                Ok(_) => {
+                    let path_str = jstable_path.to_str().unwrap();
+                    let filter = match jstable::read_filter(path_str) {
+                        Ok(f) => f,
+                        Err(e) => {
+                            let _ = tx.send(Err(e.to_string()));
+                            return;
+                        }
+                    };
+                    let index = match jstable::read_index(path_str) {
+                        Ok(i) => i,
+                        Err(e) => {
+                            let _ = tx.send(Err(e.to_string()));
+                            return;
+                        }
+                    };
+                    let _ = tx.send(Ok(LoadedTable { filter, index }));
+                }
+                Err(e) => {
+                    let _ = tx.send(Err(e.to_string()));
+                }
+            }
+        });
     }
 
     fn compact(&mut self) {
@@ -402,8 +519,10 @@ impl Collection {
 
         HybridIterator {
             mem_iter: self.memtable.documents.iter(),
+            frozen_iter: self.frozen_memtable.as_ref().map(|m| m.documents.iter()),
             disk_iter,
             memtable: &self.memtable.documents,
+            frozen_memtable: self.frozen_memtable.as_ref().map(|m| &m.documents),
             phase: ScanPhase::MemTable,
             predicate,
             projections,
@@ -420,7 +539,18 @@ impl Collection {
             return Some(doc.clone());
         }
 
-        // 2. Check JSTables (Newer to Older)
+        // 2. Check Frozen MemTable
+        if let Some(frozen) = &self.frozen_memtable {
+            if let Some(doc) = frozen.documents.get(id) {
+                use jsonb_schema::Value as JsonbValue;
+                if matches!(doc, JsonbValue::Null) {
+                    return None; // Tombstone
+                }
+                return Some(doc.clone());
+            }
+        }
+
+        // 3. Check JSTables (Newer to Older)
         let hash = {
             use std::hash::{Hash, Hasher};
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -633,6 +763,11 @@ impl DB {
     pub fn get(&self, collection: &str, id: &str) -> Result<Option<Value>, String> {
         self.get_collection(collection).map(|c| c.get(id))
     }
+
+    pub fn wait_for_flush(&mut self, collection: &str) -> Result<(), String> {
+        self.get_collection_mut(collection)
+            .map(|c| c.wait_for_ongoing_flush())
+    }
 }
 
 #[cfg(test)]
@@ -668,6 +803,9 @@ mod tests {
 
         db.insert("test", serde_to_jsonb(json!({"a": MEMTABLE_THRESHOLD})))
             .unwrap();
+
+        db.wait_for_flush("test").unwrap();
+
         let col = db.collections.get("test").unwrap();
         assert_eq!(col.memtable.len(), 1);
         assert_eq!(col.jstable_count, 1);
@@ -782,10 +920,14 @@ mod tests {
                 .unwrap();
         }
 
+        db.wait_for_flush("test").unwrap();
+
         let col = db.collections.get("test").unwrap();
         assert_eq!(col.jstable_count, JSTABLE_THRESHOLD - 1);
         db.insert("test", serde_to_jsonb(json!({ "a": 999 })))
             .unwrap();
+
+        db.wait_for_flush("test").unwrap();
 
         let col = db.collections.get("test").unwrap();
         assert_eq!(col.jstable_count, 1);
@@ -813,6 +955,8 @@ mod tests {
         db.insert("test", serde_to_jsonb(json!({ "trigger_1": 1 })))
             .unwrap();
 
+        db.wait_for_flush("test").unwrap();
+
         let col = db.collections.get("test").unwrap();
         assert_eq!(col.jstable_count, 1);
 
@@ -825,6 +969,8 @@ mod tests {
         db.insert("test", serde_to_jsonb(json!({ "trigger_2": 1 })))
             .unwrap();
 
+        db.wait_for_flush("test").unwrap();
+
         let col = db.collections.get("test").unwrap();
         assert_eq!(col.jstable_count, 2);
 
@@ -836,6 +982,8 @@ mod tests {
             db.insert("test", serde_to_jsonb(json!({ "trigger_more": t })))
                 .unwrap();
         }
+
+        db.wait_for_flush("test").unwrap();
 
         let col = db.collections.get("test").unwrap();
         assert_eq!(col.jstable_count, 1);
