@@ -55,7 +55,17 @@ impl Logger {
 
 impl Log for Logger {
     fn log(&mut self, op: Operation) -> std::io::Result<()> {
-        let span = span!(Level::DEBUG, "log", op = ?op);
+        let op_type = match &op {
+            Operation::Insert { .. } => "insert",
+            Operation::Update { .. } => "update",
+            Operation::Delete { .. } => "delete",
+        };
+        let op_id = match &op {
+            Operation::Insert { id, .. } => id,
+            Operation::Update { id, .. } => id,
+            Operation::Delete { id } => id,
+        };
+        let span = span!(Level::DEBUG, "log", op_type, op_id);
         let _enter = span.enter();
 
         if self.file.metadata()?.len() > self.rotation_threshold {
