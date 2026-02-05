@@ -35,20 +35,40 @@ pub trait Log: Send {
     fn rotate(&mut self) -> std::io::Result<()>;
 }
 
+struct CountingWriter<'a, W> {
+    inner: &'a mut W,
+    count: usize,
+}
+
+impl<'a, W: Write> Write for CountingWriter<'a, W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let n = self.inner.write(buf)?;
+        self.count += n;
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
 pub struct Logger {
     file: std::fs::File,
     path: PathBuf,
     rotation_threshold: u64,
+    current_size: u64,
 }
 
 impl Logger {
     pub fn new<P: AsRef<Path>>(path: P, rotation_threshold: u64) -> std::io::Result<Self> {
         let path = path.as_ref().to_path_buf();
         let file = OpenOptions::new().create(true).append(true).open(&path)?;
+        let current_size = file.metadata()?.len();
         Ok(Logger {
             file,
             path,
             rotation_threshold,
+            current_size,
         })
     }
 }
@@ -68,12 +88,19 @@ impl Log for Logger {
         let span = span!(Level::DEBUG, "log", op_type, op_id);
         let _enter = span.enter();
 
-        if self.file.metadata()?.len() > self.rotation_threshold {
+        if self.current_size > self.rotation_threshold {
             self.rotate()?;
         }
         let entry = LogEntry { ts: Utc::now(), op };
-        let json = serde_json::to_string(&entry)?;
-        writeln!(self.file, "{}", json)
+
+        let mut writer = CountingWriter {
+            inner: &mut self.file,
+            count: 0,
+        };
+        serde_json::to_writer(&mut writer, &entry)?;
+        writer.write_all(b"\n")?;
+        self.current_size += writer.count as u64;
+        Ok(())
     }
 
     fn rotate(&mut self) -> std::io::Result<()> {
@@ -83,6 +110,7 @@ impl Log for Logger {
             .create(true)
             .append(true)
             .open(&self.path)?;
+        self.current_size = 0;
         Ok(())
     }
 }
