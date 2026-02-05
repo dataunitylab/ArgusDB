@@ -1,3 +1,4 @@
+use argusdb::bench_utils::{save_profile, start_profiling};
 use argusdb::db::DB;
 use argusdb::query::{BinaryOperator, Expression, LogicalPlan, execute_plan};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
@@ -42,6 +43,16 @@ fn generate_query_plan(
 }
 
 fn insertion_benchmark(c: &mut Criterion) {
+    let profile_path = std::env::var("ARGUS_PROFILE").ok().map(|p| {
+        if p.is_empty() {
+            "insertion_profile.pb".to_string()
+        } else {
+            format!("insertion_{}", p)
+        }
+    });
+
+    let guard = start_profiling(&profile_path);
+
     let mut group = c.benchmark_group("insertion");
     group.sample_size(10);
     let max_docs = 10_000;
@@ -76,9 +87,21 @@ fn insertion_benchmark(c: &mut Criterion) {
     }
 
     group.finish();
+
+    save_profile(guard, &profile_path);
 }
 
 fn query_benchmark(c: &mut Criterion) {
+    let profile_path = std::env::var("ARGUS_PROFILE").ok().map(|p| {
+        if p.is_empty() {
+            "query_profile.pb".to_string()
+        } else {
+            format!("query_{}", p)
+        }
+    });
+
+    let guard = start_profiling(&profile_path);
+
     let mut group = c.benchmark_group("query");
     group.sample_size(10);
     let num_docs = 10_000;
@@ -131,6 +154,8 @@ fn query_benchmark(c: &mut Criterion) {
     }
 
     group.finish();
+
+    save_profile(guard, &profile_path);
 }
 
 criterion_group!(benches, insertion_benchmark, query_benchmark);

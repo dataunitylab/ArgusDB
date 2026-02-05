@@ -1,8 +1,19 @@
+use argusdb::bench_utils::{save_profile, start_profiling};
 use argusdb::log::{Log, Logger, Operation};
 use criterion::{Criterion, criterion_group, criterion_main};
 use tempfile::tempdir;
 
 fn logging_benchmark(c: &mut Criterion) {
+    let profile_path = std::env::var("ARGUS_PROFILE").ok().map(|p| {
+        if p.is_empty() {
+            "logging_profile.pb".to_string()
+        } else {
+            format!("logging_{}", p)
+        }
+    });
+
+    let guard = start_profiling(&profile_path);
+
     let mut group = c.benchmark_group("logging");
     group.sample_size(10);
 
@@ -26,6 +37,8 @@ fn logging_benchmark(c: &mut Criterion) {
     });
 
     group.finish();
+
+    save_profile(guard, &profile_path);
 }
 
 criterion_group!(benches, logging_benchmark);
