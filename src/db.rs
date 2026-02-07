@@ -1157,10 +1157,268 @@ mod tests {
             db.insert("test", serde_to_jsonb(json!({ "fill": i })))
                 .unwrap();
         }
+        db.wait_for_flush("test").unwrap();
 
         let doc = db.get("test", &id).unwrap().unwrap();
         assert_eq!(doc, serde_to_jsonb(json!({ "a": 1 })));
 
         assert!(db.get("test", "non-existent").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_scan_disk_predicate_and_projection() {
+        use crate::expression::{BinaryOperator, Expression};
+
+        let dir = tempdir().unwrap();
+        let mut db = DB::new(
+            dir.path().to_str().unwrap(),
+            MEMTABLE_THRESHOLD,
+            JSTABLE_THRESHOLD,
+            INDEX_THRESHOLD,
+            Some(1024 * 1024),
+        );
+        db.create_collection("test").unwrap();
+
+        db.insert("test", serde_to_jsonb(json!({"a": 5, "b": 10})))
+            .unwrap();
+        db.insert("test", serde_to_jsonb(json!({"a": 15, "b": 20})))
+            .unwrap();
+
+        // Flush to disk
+        for i in 0..MEMTABLE_THRESHOLD {
+            db.insert("test", serde_to_jsonb(json!({ "fill": i })))
+                .unwrap();
+        }
+        db.wait_for_flush("test").unwrap();
+
+        // Predicate: a > 10
+        let predicate = Expression::Binary {
+            left: Box::new(Expression::FieldReference(vec!["a"], "a")),
+            op: BinaryOperator::Gt,
+            right: Box::new(Expression::Literal(serde_to_jsonb(json!(10)))),
+        };
+
+        // Projection: b
+        let projections = vec![Expression::FieldReference(vec!["b"], "b")];
+
+        let results: Vec<Value> = db
+            .scan("test", Some(predicate), Some(projections))
+            .unwrap()
+            .map(|r| r.get_value())
+            .collect();
+
+        assert_eq!(results.len(), 1);
+        let doc = &results[0];
+        // Result should be {"b": 20}
+        if let Value::Object(obj) = doc {
+            assert_eq!(obj.get("b"), Some(&serde_to_jsonb(json!(20))));
+            assert!(!obj.contains_key("a"));
+        } else {
+            panic!("Expected object");
+        }
+    }
+
+    #[test]
+    fn test_scan_disk_tombstone() {
+        let dir = tempdir().unwrap();
+        let mut db = DB::new(
+            dir.path().to_str().unwrap(),
+            MEMTABLE_THRESHOLD,
+            JSTABLE_THRESHOLD,
+            INDEX_THRESHOLD,
+            Some(1024 * 1024),
+        );
+        db.create_collection("test").unwrap();
+
+        let id = db.insert("test", serde_to_jsonb(json!({"a": 1}))).unwrap();
+
+        // Flush insert
+        for i in 0..MEMTABLE_THRESHOLD {
+            db.insert("test", serde_to_jsonb(json!({ "fill": i })))
+                .unwrap();
+        }
+        db.wait_for_flush("test").unwrap();
+
+        // Delete and flush again (tombstone on disk)
+        db.delete("test", &id).unwrap();
+        for i in 0..MEMTABLE_THRESHOLD {
+            db.insert("test", serde_to_jsonb(json!({ "fill_2": i })))
+                .unwrap();
+        }
+        db.wait_for_flush("test").unwrap();
+
+        let results: HashMap<String, Value> = db
+            .scan("test", None, None)
+            .unwrap()
+            .map(|r| (r.id().to_string(), r.get_value()))
+            .collect();
+
+        assert!(!results.contains_key(&id));
+    }
+
+    #[test]
+    fn test_scan_shadowing() {
+        let dir = tempdir().unwrap();
+        let mut db = DB::new(
+            dir.path().to_str().unwrap(),
+            MEMTABLE_THRESHOLD,
+            JSTABLE_THRESHOLD,
+            INDEX_THRESHOLD,
+            Some(1024 * 1024),
+        );
+        db.create_collection("test").unwrap();
+
+        // 1. Insert and Flush
+        let doc = serde_to_jsonb(json!({"val": 10}));
+        let id = db.insert("test", doc).unwrap();
+
+        // Force flush
+        for i in 0..MEMTABLE_THRESHOLD {
+            db.insert("test", serde_to_jsonb(json!({ "fill": i })))
+                .unwrap();
+        }
+        db.wait_for_flush("test").unwrap();
+
+        // 2. Update (in MemTable)
+        let doc_updated = serde_to_jsonb(json!({"val": 20}));
+        db.update("test", &id, doc_updated.clone()).unwrap();
+
+        // 3. Scan and Verify
+        let results: HashMap<String, Value> = db
+            .scan("test", None, None)
+            .unwrap()
+            .map(|r| (r.id().to_string(), r.get_value()))
+            .collect();
+
+        assert_eq!(results.get(&id), Some(&doc_updated));
+    }
+
+    #[test]
+    fn test_scan_tombstone() {
+        let dir = tempdir().unwrap();
+        let mut db = DB::new(
+            dir.path().to_str().unwrap(),
+            MEMTABLE_THRESHOLD,
+            JSTABLE_THRESHOLD,
+            INDEX_THRESHOLD,
+            Some(1024 * 1024),
+        );
+        db.create_collection("test").unwrap();
+
+        let doc = serde_to_jsonb(json!({"val": 10}));
+        let id = db.insert("test", doc).unwrap();
+
+        // Force flush
+        for i in 0..MEMTABLE_THRESHOLD {
+            db.insert("test", serde_to_jsonb(json!({ "fill": i })))
+                .unwrap();
+        }
+        db.wait_for_flush("test").unwrap();
+
+        // Delete (Tombstone in MemTable)
+        db.delete("test", &id).unwrap();
+
+        let results: HashMap<String, Value> = db
+            .scan("test", None, None)
+            .unwrap()
+            .map(|r| (r.id().to_string(), r.get_value()))
+            .collect();
+
+        assert!(!results.contains_key(&id));
+    }
+
+    #[test]
+    fn test_scan_predicate_and_projection() {
+        use crate::expression::{BinaryOperator, Expression};
+
+        let dir = tempdir().unwrap();
+        let mut db = DB::new(
+            dir.path().to_str().unwrap(),
+            MEMTABLE_THRESHOLD,
+            JSTABLE_THRESHOLD,
+            INDEX_THRESHOLD,
+            Some(1024 * 1024),
+        );
+        db.create_collection("test").unwrap();
+
+        db.insert("test", serde_to_jsonb(json!({"a": 5, "b": 10})))
+            .unwrap();
+        db.insert("test", serde_to_jsonb(json!({"a": 15, "b": 20})))
+            .unwrap();
+
+        // Predicate: a > 10
+        let predicate = Expression::Binary {
+            left: Box::new(Expression::FieldReference(vec!["a"], "a")),
+            op: BinaryOperator::Gt,
+            right: Box::new(Expression::Literal(serde_to_jsonb(json!(10)))),
+        };
+
+        // Projection: b
+        let projections = vec![Expression::FieldReference(vec!["b"], "b")];
+
+        let results: Vec<Value> = db
+            .scan("test", Some(predicate), Some(projections))
+            .unwrap()
+            .map(|r| r.get_value())
+            .collect();
+
+        assert_eq!(results.len(), 1);
+        let doc = &results[0];
+        // Result should be {"b": 20}
+        if let Value::Object(obj) = doc {
+            assert_eq!(obj.get("b"), Some(&serde_to_jsonb(json!(20))));
+            assert!(!obj.contains_key("a"));
+        } else {
+            panic!("Expected object");
+        }
+    }
+
+    #[test]
+    fn test_recovery_comprehensive() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().to_str().unwrap();
+
+        {
+            let mut db = DB::new(
+                db_path,
+                MEMTABLE_THRESHOLD,
+                JSTABLE_THRESHOLD,
+                INDEX_THRESHOLD,
+                Some(1024 * 1024),
+            );
+            db.create_collection("test").unwrap();
+            let id = db
+                .insert("test", serde_to_jsonb(json!({"val": 1})))
+                .unwrap();
+            db.update("test", &id, serde_to_jsonb(json!({"val": 2})))
+                .unwrap();
+            db.delete("test", &id).unwrap();
+        }
+
+        {
+            let db = DB::new(
+                db_path,
+                MEMTABLE_THRESHOLD,
+                JSTABLE_THRESHOLD,
+                INDEX_THRESHOLD,
+                Some(1024 * 1024),
+            );
+            let results: HashMap<String, Value> = db
+                .scan("test", None, None)
+                .unwrap()
+                .map(|r| (r.id().to_string(), r.get_value()))
+                .collect();
+            assert!(results.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_sanitize_filename_edge_cases() {
+        assert_eq!(sanitize_filename("valid123"), "valid123");
+        // implementation replaces non-alphanumeric with _hex
+        // '/' is non-alphanumeric.
+        let sanitized = sanitize_filename("test/path");
+        assert!(sanitized.contains('_'));
+        assert!(!sanitized.contains('/'));
     }
 }

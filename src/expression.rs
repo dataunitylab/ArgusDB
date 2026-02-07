@@ -631,4 +631,153 @@ mod tests {
         let result = evaluate_expression(&expr, &doc);
         assert_eq!(result, serde_to_jsonb(json!(8.0)));
     }
+
+    #[test]
+    fn test_evaluate_binary() {
+        let doc = serde_to_jsonb(json!({"a": 10, "b": 20}));
+
+        let expr = Expression::Binary {
+            left: Box::new(Expression::FieldReference(vec!["a"], "a")),
+            op: BinaryOperator::Lt,
+            right: Box::new(Expression::FieldReference(vec!["b"], "b")),
+        };
+        assert_eq!(evaluate_expression(&expr, &doc), Value::Bool(true));
+
+        let expr = Expression::Binary {
+            left: Box::new(Expression::FieldReference(vec!["a"], "a")),
+            op: BinaryOperator::Eq,
+            right: Box::new(Expression::Literal(serde_to_jsonb(json!(10)))),
+        };
+        assert_eq!(evaluate_expression(&expr, &doc), Value::Bool(true));
+    }
+
+    #[test]
+    fn test_evaluate_logical() {
+        let doc = serde_to_jsonb(json!({"a": true, "b": false}));
+
+        let expr = Expression::Logical {
+            left: Box::new(Expression::FieldReference(vec!["a"], "a")),
+            op: LogicalOperator::And,
+            right: Box::new(Expression::FieldReference(vec!["b"], "b")),
+        };
+        assert_eq!(evaluate_expression(&expr, &doc), Value::Bool(false));
+
+        let expr = Expression::Logical {
+            left: Box::new(Expression::FieldReference(vec!["a"], "a")),
+            op: LogicalOperator::Or,
+            right: Box::new(Expression::FieldReference(vec!["b"], "b")),
+        };
+        assert_eq!(evaluate_expression(&expr, &doc), Value::Bool(true));
+    }
+
+    #[test]
+    fn test_evaluate_lazy() {
+        use crate::SerdeWrapper;
+
+        fn create_lazy(id: &str, val: serde_json::Value) -> LazyDocument {
+            let doc = serde_to_jsonb(val);
+            let record = (id.to_string(), SerdeWrapper(&doc));
+            let blob = jsonb_schema::to_owned_jsonb(&record).unwrap();
+            LazyDocument {
+                id: id.to_string(),
+                raw: blob.to_vec(),
+            }
+        }
+
+        let lazy = create_lazy("id1", json!({"a": 10, "b": 20}));
+
+        // Field Reference
+        let expr = Expression::FieldReference(vec!["a"], "a");
+        let val = evaluate_expression_lazy(&expr, &lazy);
+        assert_eq!(val, serde_to_jsonb(json!(10)));
+
+        // Lazy optimization check (evaluate_to_f64_lazy)
+        let f = evaluate_to_f64_lazy(&expr, &lazy);
+        assert_eq!(f, Some(10.0));
+    }
+
+    #[test]
+    fn test_evaluate_lazy_jsonpath() {
+        use crate::SerdeWrapper;
+
+        fn create_lazy(id: &str, val: serde_json::Value) -> LazyDocument {
+            let doc = serde_to_jsonb(val);
+            let record = (id.to_string(), SerdeWrapper(&doc));
+            let blob = jsonb_schema::to_owned_jsonb(&record).unwrap();
+            LazyDocument {
+                id: id.to_string(),
+                raw: blob.to_vec(),
+            }
+        }
+
+        let lazy = create_lazy("id1", json!({"a": {"b": 42}}));
+
+        // Create JsonPath expression $.a.b
+        let path_str = "$.a.b";
+        let parsed = jsonb_schema::jsonpath::parse_json_path(path_str.as_bytes()).unwrap();
+        let expr = Expression::JsonPath(Box::new(parsed), path_str);
+
+        let val = evaluate_expression_lazy(&expr, &lazy);
+        assert_eq!(val, serde_to_jsonb(json!(42)));
+    }
+
+    #[test]
+    fn test_evaluate_lazy_binary_extended() {
+        use crate::SerdeWrapper;
+
+        fn create_lazy(id: &str, val: serde_json::Value) -> LazyDocument {
+            let doc = serde_to_jsonb(val);
+            let record = (id.to_string(), SerdeWrapper(&doc));
+            let blob = jsonb_schema::to_owned_jsonb(&record).unwrap();
+            LazyDocument {
+                id: id.to_string(),
+                raw: blob.to_vec(),
+            }
+        }
+
+        let lazy = create_lazy("id1", json!({"a": 10, "b": 20}));
+
+        // Neq
+        let expr = Expression::Binary {
+            left: Box::new(Expression::FieldReference(vec!["a"], "a")),
+            op: BinaryOperator::Neq,
+            right: Box::new(Expression::FieldReference(vec!["b"], "b")),
+        };
+        assert_eq!(evaluate_expression_lazy(&expr, &lazy), Value::Bool(true));
+
+        // Lte
+        let expr = Expression::Binary {
+            left: Box::new(Expression::FieldReference(vec!["a"], "a")),
+            op: BinaryOperator::Lte,
+            right: Box::new(Expression::FieldReference(vec!["b"], "b")),
+        };
+        assert_eq!(evaluate_expression_lazy(&expr, &lazy), Value::Bool(true));
+
+        // Gte
+        let expr = Expression::Binary {
+            left: Box::new(Expression::FieldReference(vec!["a"], "a")),
+            op: BinaryOperator::Gte,
+            right: Box::new(Expression::FieldReference(vec!["b"], "b")),
+        };
+        assert_eq!(evaluate_expression_lazy(&expr, &lazy), Value::Bool(false));
+    }
+
+    #[test]
+    fn test_evaluate_to_f64_lazy_literal() {
+        use crate::SerdeWrapper;
+
+        // Literal Number
+        let expr = Expression::Literal(serde_to_jsonb(json!(10.5)));
+        // doc is irrelevant for literal but needed for signature
+        let doc_val = serde_to_jsonb(json!({}));
+        let record = ("id".to_string(), SerdeWrapper(&doc_val));
+        let blob = jsonb_schema::to_owned_jsonb(&record).unwrap();
+        let lazy = LazyDocument {
+            id: "id".to_string(),
+            raw: blob.to_vec(),
+        };
+
+        let f = evaluate_to_f64_lazy(&expr, &lazy);
+        assert_eq!(f, Some(10.5));
+    }
 }

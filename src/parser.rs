@@ -441,5 +441,57 @@ mod tests {
         }
     }
 
-    // Add other tests similarly updated with arena...
+    #[test]
+    fn test_parse_ddl() {
+        let arena = Bump::new();
+
+        let sql = "CREATE COLLECTION users";
+        let stmt = parse(sql, &arena).unwrap();
+        assert!(matches!(
+            stmt,
+            Statement::CreateCollection { collection } if collection == "users"
+        ));
+
+        let sql = "DROP COLLECTION users";
+        let stmt = parse(sql, &arena).unwrap();
+        assert!(matches!(
+            stmt,
+            Statement::DropCollection { collection } if collection == "users"
+        ));
+
+        let sql = "SHOW COLLECTIONS";
+        let stmt = parse(sql, &arena).unwrap();
+        assert!(matches!(stmt, Statement::ShowCollections));
+    }
+
+    #[test]
+    fn test_parse_errors() {
+        let arena = Bump::new();
+
+        // Invalid SQL syntax
+        let sql = "SELECT FROM WHERE";
+        assert!(parse(sql, &arena).is_err());
+
+        // INSERT without VALUES
+        let sql = "INSERT INTO users SELECT * FROM other";
+        assert!(parse(sql, &arena).is_err());
+
+        // SELECT * (Wildcard unsupported)
+        let sql = "SELECT * FROM users";
+        let res = parse(sql, &arena);
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("Wildcard * not supported"));
+
+        // Invalid JSON in INSERT
+        let sql = "INSERT INTO users VALUES (`{invalid json}`)";
+        let res = parse(sql, &arena);
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("Invalid JSON in INSERT"));
+
+        // Expected exactly one statement
+        let sql = "SELECT a FROM t; SELECT b FROM t;";
+        let res = parse(sql, &arena);
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("Expected exactly one statement"));
+    }
 }
