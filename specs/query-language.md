@@ -144,7 +144,7 @@ Each parameter can be either a constant, field name, or a JSONPath expression.
 - `SQRT(x)`: Returns the square root of `x`
 
 ##### Binary Functions
-- `ATAN2(x, y)`: Returns the arc tangent of `y/x` in radians
+- `ATAN2(y, x)`: Returns the arc tangent of `y/x` in radians
 - `DIV(x, y)`: Returns the integer quotient of `x/y`
 - `LOG(x, y)`: Returns the logarithm of `x` with base `y` (`y` is optional and defaults to e)
 - `LOG10(x)`: Returns the base-10 logarithm of `x`

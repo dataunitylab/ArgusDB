@@ -307,7 +307,7 @@ fn evaluate_function(func: &ScalarFunction, vals: &[Value]) -> Value {
                 None
             };
             match (f1, f2) {
-                (Some(x), Some(y)) => Some(y.atan2(x)),
+                (Some(y), Some(x)) => Some(y.atan2(x)),
                 _ => None,
             }
         }
@@ -569,12 +569,18 @@ mod tests {
         );
 
         // ATAN2(1, 1) -> pi/4
-        // ATAN2(x, y) = atan(y/x).
+        // ATAN2(y, x) = atan(y/x).
         // args: [one, one]. atan(1/1) = atan(1) = pi/4
         let atan2_val = eval_args(ScalarFunction::Atan2, vec!["one", "one"])
             .as_f64()
             .unwrap();
         assert!((atan2_val - std::f64::consts::FRAC_PI_4).abs() < 1e-10);
+
+        // ATAN2(1, 0) -> pi/2 (Y=1, X=0)
+        let atan2_val_2 = eval_args(ScalarFunction::Atan2, vec!["one", "zero"])
+            .as_f64()
+            .unwrap();
+        assert!((atan2_val_2 - std::f64::consts::FRAC_PI_2).abs() < 1e-10);
 
         // ROUND
         // ROUND(0.5) -> 1.0
