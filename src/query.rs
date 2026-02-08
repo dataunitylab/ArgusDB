@@ -207,6 +207,12 @@ pub struct Batch {
     pub items: Vec<ExecutionResult>,
 }
 
+impl Default for Batch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Batch {
     pub fn new() -> Self {
         Batch {
@@ -269,10 +275,10 @@ impl<'a> Iterator for FlattenOperator<'a> {
     type Item = ExecutionResult;
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            if let Some(iter) = &mut self.current_batch {
-                if let Some(item) = iter.next() {
-                    return Some(item);
-                }
+            if let Some(iter) = &mut self.current_batch
+                && let Some(item) = iter.next()
+            {
+                return Some(item);
             }
             // Need next batch
             if let Some(batch) = self.input.next() {
@@ -372,62 +378,61 @@ impl<'a> BatchFilterOperator<'a> {
     }
 
     fn filter_batch(&mut self, batch: &mut Batch) {
-        if let Expression::Binary { left, op, right } = &self.predicate {
-            if let (Expression::FieldReference(_, _), Expression::Literal(Value::Number(n))) =
+        if let Expression::Binary { left, op, right } = &self.predicate
+            && let (Expression::FieldReference(_, _), Expression::Literal(Value::Number(n))) =
                 (left.as_ref(), right.as_ref())
-            {
-                let threshold = match n {
-                    jsonb_schema::Number::Float64(f) => *f,
-                    jsonb_schema::Number::Int64(i) => *i as f64,
-                    jsonb_schema::Number::UInt64(u) => *u as f64,
-                    _ => {
-                        self.fallback_filter(batch);
-                        return;
-                    }
+        {
+            let threshold = match n {
+                jsonb_schema::Number::Float64(f) => *f,
+                jsonb_schema::Number::Int64(i) => *i as f64,
+                jsonb_schema::Number::UInt64(u) => *u as f64,
+                _ => {
+                    self.fallback_filter(batch);
+                    return;
+                }
+            };
+
+            // Recycle buffers
+            self.buf_values.clear();
+            self.buf_valid.clear();
+
+            for item in &batch.items {
+                let maybe_f = match item {
+                    ExecutionResult::Value(_, v) => match evaluate_expression(left, v) {
+                        Value::Number(n) => get_f64_from_number(&n),
+                        _ => None,
+                    },
+                    ExecutionResult::Lazy(doc) => evaluate_to_f64_lazy(left, doc),
                 };
 
-                // Recycle buffers
-                self.buf_values.clear();
-                self.buf_valid.clear();
-
-                for item in &batch.items {
-                    let maybe_f = match item {
-                        ExecutionResult::Value(_, v) => match evaluate_expression(left, v) {
-                            Value::Number(n) => get_f64_from_number(&n),
-                            _ => None,
-                        },
-                        ExecutionResult::Lazy(doc) => evaluate_to_f64_lazy(left, doc),
-                    };
-
-                    if let Some(f) = maybe_f {
-                        self.buf_values.push(f);
-                        self.buf_valid.push(true);
-                    } else {
-                        self.buf_values.push(0.0);
-                        self.buf_valid.push(false);
-                    }
+                if let Some(f) = maybe_f {
+                    self.buf_values.push(f);
+                    self.buf_valid.push(true);
+                } else {
+                    self.buf_values.push(0.0);
+                    self.buf_valid.push(false);
                 }
-
-                let mut i = 0;
-                let buf_values = &self.buf_values;
-                let buf_valid = &self.buf_valid;
-
-                batch.items.retain(|_| {
-                    let valid = buf_valid[i];
-                    let val = buf_values[i];
-                    let keep = match op {
-                        BinaryOperator::Gt => valid && val > threshold,
-                        BinaryOperator::Lt => valid && val < threshold,
-                        BinaryOperator::Gte => valid && val >= threshold,
-                        BinaryOperator::Lte => valid && val <= threshold,
-                        BinaryOperator::Eq => valid && (val - threshold).abs() < f64::EPSILON,
-                        _ => false,
-                    };
-                    i += 1;
-                    keep
-                });
-                return;
             }
+
+            let mut i = 0;
+            let buf_values = &self.buf_values;
+            let buf_valid = &self.buf_valid;
+
+            batch.items.retain(|_| {
+                let valid = buf_valid[i];
+                let val = buf_values[i];
+                let keep = match op {
+                    BinaryOperator::Gt => valid && val > threshold,
+                    BinaryOperator::Lt => valid && val < threshold,
+                    BinaryOperator::Gte => valid && val >= threshold,
+                    BinaryOperator::Lte => valid && val <= threshold,
+                    BinaryOperator::Eq => valid && (val - threshold).abs() < f64::EPSILON,
+                    _ => false,
+                };
+                i += 1;
+                keep
+            });
+            return;
         }
         self.fallback_filter(batch);
     }
@@ -525,13 +530,13 @@ fn is_vectorizable(plan: &LogicalPlan) -> bool {
         LogicalPlan::Scan { .. } => true,
         LogicalPlan::Filter { input, predicate } => {
             let simple_pred = if let Expression::Binary { left, op: _, right } = predicate {
-                if let (Expression::FieldReference(_, _), Expression::Literal(Value::Number(_))) =
-                    (left.as_ref(), right.as_ref())
-                {
-                    true
-                } else {
-                    false
-                }
+                matches!(
+                    (left.as_ref(), right.as_ref()),
+                    (
+                        Expression::FieldReference(_, _),
+                        Expression::Literal(Value::Number(_))
+                    )
+                )
             } else {
                 false
             };

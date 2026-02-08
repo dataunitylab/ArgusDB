@@ -51,10 +51,10 @@ impl<'a> Iterator for HybridIterator<'a> {
                             continue; // Tombstone
                         }
 
-                        if let Some(pred) = &self.predicate {
-                            if evaluate_expression(pred, val) != Value::Bool(true) {
-                                continue;
-                            }
+                        if let Some(pred) = &self.predicate
+                            && evaluate_expression(pred, val) != Value::Bool(true)
+                        {
+                            continue;
                         }
 
                         if let Some(projs) = &self.projections {
@@ -92,10 +92,10 @@ impl<'a> Iterator for HybridIterator<'a> {
                                 continue; // Tombstone
                             }
 
-                            if let Some(pred) = &self.predicate {
-                                if evaluate_expression(pred, val) != Value::Bool(true) {
-                                    continue;
-                                }
+                            if let Some(pred) = &self.predicate
+                                && evaluate_expression(pred, val) != Value::Bool(true)
+                            {
+                                continue;
                             }
 
                             if let Some(projs) = &self.projections {
@@ -128,10 +128,10 @@ impl<'a> Iterator for HybridIterator<'a> {
                         if self.memtable.contains_key(res.id()) {
                             continue;
                         }
-                        if let Some(frozen) = self.frozen_memtable {
-                            if frozen.contains_key(res.id()) {
-                                continue;
-                            }
+                        if let Some(frozen) = self.frozen_memtable
+                            && frozen.contains_key(res.id())
+                        {
+                            continue;
                         }
                         return Some(res);
                     } else {
@@ -196,10 +196,10 @@ impl<'a> Iterator for MergedIterator<'a> {
                         use jsonb_schema::Value as JsonbValue;
                         if !matches!(val, JsonbValue::Null) {
                             // Check predicate if exists
-                            if let Some(pred) = &self.predicate {
-                                if evaluate_expression(pred, val) != Value::Bool(true) {
-                                    continue;
-                                }
+                            if let Some(pred) = &self.predicate
+                                && evaluate_expression(pred, val) != Value::Bool(true)
+                            {
+                                continue;
                             }
 
                             if let Some(projs) = &self.projections {
@@ -225,10 +225,10 @@ impl<'a> Iterator for MergedIterator<'a> {
                     ExecutionResult::Lazy(doc) => {
                         if !doc.is_tombstone() {
                             // Check predicate if exists
-                            if let Some(pred) = &self.predicate {
-                                if evaluate_expression_lazy(pred, doc) != Value::Bool(true) {
-                                    continue;
-                                }
+                            if let Some(pred) = &self.predicate
+                                && evaluate_expression_lazy(pred, doc) != Value::Bool(true)
+                            {
+                                continue;
                             }
 
                             if let Some(projs) = &self.projections {
@@ -540,14 +540,14 @@ impl Collection {
         }
 
         // 2. Check Frozen MemTable
-        if let Some(frozen) = &self.frozen_memtable {
-            if let Some(doc) = frozen.documents.get(id) {
-                use jsonb_schema::Value as JsonbValue;
-                if matches!(doc, JsonbValue::Null) {
-                    return None; // Tombstone
-                }
-                return Some(doc.clone());
+        if let Some(frozen) = &self.frozen_memtable
+            && let Some(doc) = frozen.documents.get(id)
+        {
+            use jsonb_schema::Value as JsonbValue;
+            if matches!(doc, JsonbValue::Null) {
+                return None; // Tombstone
             }
+            return Some(doc.clone());
         }
 
         // 3. Check JSTables (Newer to Older)

@@ -88,7 +88,7 @@ async fn main() {
 
     println!("Starting ArgusDB server on {}:{}", host, port);
     let mut command = Command::new("./target/release/argusdb");
-    command.args(&[
+    command.args([
         "--jstable-dir",
         &db_path,
         "--host",
